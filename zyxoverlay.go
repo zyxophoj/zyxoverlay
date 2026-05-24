@@ -1,0 +1,653 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"golang.org/x/net/html"
+	"image"
+	"image/color"
+	"io"
+	"math"
+	"math/rand"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	_ "image/png"
+
+	"golang.org/x/image/font/basicfont"
+
+	"github.com/gopxl/pixel/v2"
+	"github.com/gopxl/pixel/v2/backends/opengl"
+	"github.com/gopxl/pixel/v2/ext/text"
+)
+
+func main() {
+	raw_messages := make(chan []byte)
+
+	http.HandleFunc("/zyxoverlay", func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case "POST":
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				fmt.Println(err)
+				w.WriteHeader(400)
+				return
+			}
+
+			defer req.Body.Close()
+
+			raw_messages <- body
+			fallthrough
+		case "OPTIONS": // We must allow this to avoid getting blocked by cross-site scripting security.
+			w.Header()["Access-Control-Allow-Origin"] = []string{"https://www.twitch.tv"}
+			w.WriteHeader(200)
+
+		default: // Whatever this is, we don't do it.
+			w.WriteHeader(405)
+		}
+	})
+
+	messages := make(chan map[string]string)
+
+	// Receive twitch chat updates from browser parasite,
+	// extract username and message.
+	go func() {
+		// You know the rules, and so do I
+		rules := map[string]string{
+			"message-username":  "username",
+			"chat-message-text": "message-text",
+		}
+		for raw := range raw_messages {
+			parsed := map[string]string{}
+			json.Unmarshal(raw, &parsed)
+
+			doc, _ := html.Parse(strings.NewReader(parsed["dump"]))
+
+			out := map[string]string{}
+			crawl := func(node *html.Node) {}
+			crawl = func(node *html.Node) {
+				for _, att := range node.Attr {
+					for k, v := range rules {
+						if att.Val == k {
+							out[v] = node.FirstChild.Data
+						}
+					}
+				}
+
+				for child := node.FirstChild; child != nil; child = child.NextSibling {
+					crawl(child)
+				}
+			}
+			crawl(doc)
+
+			messages <- out
+		}
+	}()
+
+	go func() {
+		err := http.ListenAndServe(":80", nil)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(-1)
+		}
+	}()
+
+	// opengl demands the main thread
+	opengl.Run(func() { run_fight_club(messages) })
+}
+
+// Fight club stuff starts here - load from file does not yet exist
+
+type Config struct {
+	TextHeight         float64 `json:"text_height"`
+	ArenaWidth         float64 `json:"arena_width"`
+	ArenaHeight        float64 `json:"arena_height"`
+	PushHeight         float64 `json:"push_height"`
+	PushSpeed          float64 `json:"push_speed"`
+	MaxActivePlatforms int     `json:"max_active_platforms"`
+	Gravity            float64 `json:"gravity"`
+	DudeWidth          float64 `json:"dude_width"`
+	DudeHeight         float64 `json:"dude_height"`
+	PlatformPadding    float64 `json:"platform_padding"`
+	TeabagTime         float64 `json:"teabag_time"`
+	Atlas              *text.Atlas
+}
+
+type Colours struct {
+	Background    color.RGBA `json:"background"`
+	Text          color.RGBA `json:"text"`
+	HitpointsText color.RGBA `json:"hitpoints_text"`
+	Platform      color.RGBA `json:"platform"`
+}
+
+type fight_club_globals struct {
+	cfg     *Config
+	colours *Colours
+
+	sprites map[string]*pixel.Sprite
+}
+
+var FIGHT_CLUB_GLOBALS = &fight_club_globals{nil, nil, map[string]*pixel.Sprite{}}
+
+func get_config() (*Config, *Colours) {
+
+	if FIGHT_CLUB_GLOBALS.cfg != nil {
+		return FIGHT_CLUB_GLOBALS.cfg, FIGHT_CLUB_GLOBALS.colours
+	}
+
+	FIGHT_CLUB_GLOBALS.cfg = &Config{
+		TextHeight:         13,
+		ArenaWidth:         1280,
+		ArenaHeight:        480,
+		PushHeight:         60,
+		PushSpeed:          15,
+		MaxActivePlatforms: 5,
+		Gravity:            -250.0, // up is positive.  Since dudes are 50 pixels high, this is roughly equivalent to standard 9.8ms^-2.
+		DudeWidth:          20,
+		DudeHeight:         50,
+		PlatformPadding:    5.0,
+		TeabagTime:         0.8,
+		Atlas:              text.NewAtlas(basicfont.Face7x13, text.ASCII),
+	}
+
+	// This is intended as an overlay, which means the background colour should be something
+	// that works well with chroma key filtering.  That is why it is snot green.
+	FIGHT_CLUB_GLOBALS.colours = &Colours{
+		Background:    color.RGBA{0, 0xFF, 0, 0xFF},
+		Text:          color.RGBA{0xFF, 0xFF, 0xFF, 0xFF},
+		HitpointsText: color.RGBA{0x80, 0, 0, 0xFF},
+		Platform:      color.RGBA{0, 0, 0x80, 0xFF},
+	}
+
+	return FIGHT_CLUB_GLOBALS.cfg, FIGHT_CLUB_GLOBALS.colours
+}
+
+func get_sprite(name string) *pixel.Sprite {
+	current := FIGHT_CLUB_GLOBALS.sprites[name]
+	if current != nil {
+		return current
+	}
+
+	file, err := os.Open(name + ".png")
+	if err != nil {
+		fmt.Println(err)
+		return nil
+	}
+	defer file.Close()
+	img, _, err := image.Decode(file)
+	if err != nil {
+		fmt.Println(err)
+		return nil
+	}
+	dude_pic := pixel.PictureDataFromImage(img)
+	out := pixel.NewSprite(dude_pic, dude_pic.Bounds())
+
+	FIGHT_CLUB_GLOBALS.sprites[name] = out
+	return out
+}
+
+func solid_rect_sprite(rect pixel.Rect, colour color.RGBA) *pixel.Sprite {
+	pd := pixel.MakePictureData(rect)
+	for i := range pd.Pix {
+		pd.Pix[i] = colour
+	}
+	return pixel.NewSprite(pd, pd.Bounds())
+}
+
+type FCO interface {
+	Tick(seconds float64)
+	Draw(target pixel.Target)
+}
+
+type platform struct {
+	sprite *pixel.Sprite
+	text   *text.Text
+
+	rect pixel.Rect
+
+	// These are relative to top left of rect
+	sprite_offset pixel.Vec
+	text_offset   pixel.Vec
+
+	age float64
+}
+
+func make_platform(message string, atlas *text.Atlas) *platform {
+	cfg, colours := get_config()
+
+	plat_text := text.New(pixel.V(0, 0), atlas)
+	width := plat_text.BoundsOf(message).W()
+	if width > cfg.ArenaWidth*0.6 {
+		message = "[WALL Of TEXT]"
+		width = plat_text.BoundsOf(message).W()
+	}
+	plat_text.Color = colours.Text
+	fmt.Fprintln(plat_text, message)
+	plat_width := width + 2*5
+	plat_height := cfg.TextHeight + 2*1
+	plat_sprite := solid_rect_sprite(pixel.Rect{pixel.V(0, 0), pixel.V(plat_width, plat_height)}, colours.Platform)
+
+	left := rand.Float64() * (cfg.ArenaWidth - plat_width)
+	left = float64(int(left))
+
+	return &platform{plat_sprite, plat_text,
+		pixel.R(left, -plat_height, left+plat_width, 0),
+		pixel.Vec{X: plat_width / 2, Y: plat_height / 2}, // sprites are drawn based on centre
+		pixel.Vec{X: 5, Y: 1 + 2},                        // but text is drawn based off top-left corner!!  And that "2" make no sense,
+		0,
+	}
+}
+
+func (p *platform) Move(dx float64, dy float64) {
+	p.rect = p.rect.Moved(pixel.V(dx, dy))
+}
+
+func (p *platform) Draw(target pixel.Target) {
+	top_left := pixel.V(p.rect.Min.X, p.rect.Min.Y)
+
+	p.sprite.Draw(target, pixel.IM.Moved(p.sprite_offset.Add(top_left)))
+	p.text.Draw(target, pixel.IM.Moved(p.text_offset.Add(top_left)))
+}
+
+type dude struct {
+	name           string
+	name_text      *text.Text
+	hitpoints_text *text.Text
+	width, height  int
+	x, y           float64 //bottom centre
+	dx, dy         float64
+
+	name_offset pixel.Vec
+
+	hitpoints        float64
+	cooldown_seconds float64
+
+	teabag_cooldown float64
+	teabagee        *corpse
+
+	// TODO: mode?
+}
+
+func make_dude(name string, atlas *text.Atlas, arena_width float64, arena_height float64) *dude {
+	_, colour := get_config()
+
+	dude_text := text.New(pixel.V(0, 0), atlas)
+	fmt.Fprintln(dude_text, name)
+	dude_text.Color = colour.Text
+
+	dude_width := 20
+
+	hp_text := text.New(pixel.V(0, 0), atlas)
+	hp_text.Color = colour.HitpointsText
+	fmt.Fprintln(hp_text, "99")
+
+	return &dude{name, dude_text, hp_text,
+		dude_width, 50,
+		float64(dude_width)/2.0 + rand.Float64()*(arena_width-float64(dude_width)), arena_height,
+		0, 0,
+		pixel.V(-0.5*dude_text.BoundsOf(name).W(), 50),
+		99, 0, 0, nil,
+	}
+}
+
+func (d *dude) Tick(seconds float64) {
+	cfg, _ := get_config()
+
+	d.dy += cfg.Gravity * seconds
+	if (d.x < 0 && d.dx < 0) || (d.x > cfg.ArenaWidth && d.dx > 0) {
+		d.dx = -0.9 * d.dx
+	}
+
+	d.x += d.dx * seconds
+	d.y += d.dy * seconds
+
+	d.teabag_cooldown -= seconds
+	if d.teabag_cooldown < 0 {
+		d.teabag_cooldown = 0
+	}
+	
+	if d.dx == 0 && d.teabag_cooldown == 0 {
+		d.dx = 150 * (rand.Float64() - 0.5)
+	}
+}
+
+func (d *dude) Draw(target pixel.Target) {
+	cfg, _ := get_config()
+
+	position := pixel.V(d.x, d.y)
+	sprite := dude_sprite()
+	if d.teabag_cooldown > 0 {
+		sprite = []*pixel.Sprite{sprite, dude_teabagging_sprite()}[int(5.0*d.teabag_cooldown/cfg.TeabagTime)%2]
+	}
+	height := sprite.Frame().H()
+
+	d.name_text.Draw(target, pixel.IM.Moved(pixel.V(d.name_offset.X, height).Add(position)))
+	sprite.Draw(target, pixel.IM.Moved(position.Add(pixel.V(0, height/2))))
+	d.hitpoints_text.Draw(target, pixel.IM.Moved(position.Add(pixel.V(
+		-0.5*d.hitpoints_text.BoundsOf(strconv.Itoa(int(d.hitpoints))).W(), height-15))))
+}
+
+// update_hp increases a dude's HP by the specified amount (which can be negative)
+// It also updates cached drawing data that depends on HP.
+// This may create a corpse, which is simply returned (it's up to the caller to add the corpse to the world)
+func (d *dude) update_hp(change float64) *corpse {
+	old_hitpoints := d.hitpoints
+	d.hitpoints += change
+	d.hitpoints_text.Clear()
+	fmt.Fprintln(d.hitpoints_text, strconv.Itoa(int(d.hitpoints)))
+
+	if d.hitpoints < 0 && !(old_hitpoints < 0) {
+		return make_corpse(d.name, d.x, d.y)
+	}
+
+	return nil
+}
+
+func dude_sprite() *pixel.Sprite {
+	return get_sprite("dude")
+}
+
+func dude_teabagging_sprite() *pixel.Sprite {
+	return get_sprite("dudeteabag")
+}
+
+func corpse_sprite() *pixel.Sprite {
+	return get_sprite("corpse")
+}
+
+type corpse struct {
+	name        string
+	name_text   *text.Text
+	name_offset pixel.Vec
+
+	x, y   float64 //bottom centre
+	dx, dy float64
+}
+
+func make_corpse(name string, x float64, y float64) *corpse {
+	cfg, colour := get_config()
+
+	name_text := text.New(pixel.V(0, 0), cfg.Atlas)
+	fmt.Fprintln(name_text, name)
+	name_text.Color = colour.Text
+
+	return &corpse{name, name_text, pixel.V(-0.5*name_text.BoundsOf(name).W(), 30), x, y, 0, 0}
+}
+
+func (c *corpse) Draw(target pixel.Target) {
+	position := pixel.V(c.x, c.y)
+
+	c.name_text.Draw(target, pixel.IM.Moved(c.name_offset.Add(position)))
+	corpse_sprite().Draw(target, pixel.IM.Moved(position.Add(pixel.V(0, 10))))
+}
+
+func (c *corpse) Tick(seconds float64) {
+	cfg, _ := get_config()
+
+	c.dy += cfg.Gravity * seconds
+
+	c.x += c.dx * seconds
+	c.y += c.dy * seconds
+}
+
+// run_fight_club does something we don't talk about
+func run_fight_club(messages chan map[string]string) {
+	const TEXT_HEIGHT = 13 // because hard-coded basicfont.Face7x13.
+
+	last_user := "sdfhjasldfhal"
+	last_message := "sjklfhasjkld2"
+
+	cfg, colour := get_config()
+
+	wcfg := opengl.WindowConfig{
+		Title:  "Do not talk about fight club",
+		Bounds: pixel.R(0, 0, cfg.ArenaWidth, cfg.ArenaHeight),
+		VSync:  true,
+	}
+	win, err := opengl.NewWindow(wcfg)
+	if err != nil {
+		panic(err)
+	}
+	defer win.Destroy()
+
+	queued_platforms := []*platform{} // oldest first
+	active_platforms := []*platform{}
+	dudes := map[string]*dude{}
+	corpses := map[*corpse]bool{}
+
+	pushing := false  // True if platforms are moving upwards
+	push_height := 0.0
+
+	old_time := time.Now()
+	for !win.Closed() {
+		new_time := time.Now()
+		tick := new_time.Sub(old_time)
+		old_time = new_time
+
+		// Platforms time out after a while
+		if len(active_platforms) > 0 {
+			active_platforms[0].age += tick.Seconds()
+			if active_platforms[0].age > 60 {
+				active_platforms = active_platforms[1:]
+			}
+		}
+
+		// New platforms need to wake up the pushing mechanic
+		if !pushing && len(queued_platforms) > 0 {
+			active_platforms = append(active_platforms, queued_platforms[0])
+			for len(active_platforms) > 5 {
+				active_platforms = active_platforms[1:]
+			}
+			queued_platforms = queued_platforms[1:]
+
+			push_height = 0.0
+			pushing = true
+		}
+
+		if pushing {
+			// To avoid a backlong, lnog queues increase p[using speed
+			push_change := tick.Seconds() * cfg.PushSpeed * float64(1+len(queued_platforms))
+			push_height += push_change
+			if push_height > cfg.PushHeight {
+				push_change -= (push_height - cfg.PushHeight)
+				push_height = cfg.PushHeight
+				pushing = false
+			}
+
+			for _, p := range active_platforms {
+				p.Move(0, push_change)
+			}
+		}
+
+		// Fight!
+		// TODO: parachuting dudes can't fight or be fought
+		// TODO: dudes in cooldown can't fight
+
+		// To avoid rug-pulls, we'll record who should be removed from the game due to deadness here,
+		// and remove them after the fight loop.
+		morgue := []*dude{}
+
+		for _, d1 := range dudes {
+			for _, d2 := range dudes {
+				if d1 == d2 {
+					continue
+				}
+
+				// Must be close enough to fight
+				if math.Abs(d1.x-d2.x) > 7 || math.Abs(d1.y-d2.y) > 1 {
+					continue
+				}
+
+				// Rule 3:  If somebody dies, the fight is over (for them, at least)
+				if d1.hitpoints < 0 || d2.hitpoints < 0 {
+					continue
+				}
+
+				xdiff := d2.x - d1.x
+				dxdiff := d2.dx - d1.dx
+				if dxdiff*xdiff >= 0 {
+					//They are moving apart
+					continue
+				}
+
+				if d1.dx*d2.dx <= 0 {
+					//Moving towards each other
+					damage1, damage2 := math.Sqrt(d1.hitpoints), math.Sqrt(d2.hitpoints)
+					corpses[d1.update_hp(-damage2)] = true
+					corpses[d2.update_hp(-damage1)] = true
+					d1.dx, d2.dx = -0.9*d1.dx, -0.9*d2.dx
+					d1.dy += 20
+					d2.dy += 20
+
+					fmt.Println(d1.name, "hits", d2.name, "down to", d2.hitpoints)
+					fmt.Println(d2.name, "hits", d1.name, "down to", d1.hitpoints)
+				} else {
+					//Backstab!
+					stabber, victim := d1, d2
+					if math.Abs(d2.dx) > math.Abs(d1.dx) {
+						stabber, victim = d2, d1
+					}
+
+					// There is an element of cartoon physics here, but there is also an important
+					// balance consideration.  Dudes get backstabbed when they are walking too slowly.
+					// We don't want a permanently-slow-moving (and therefore, -backstab-receiving)
+					// subclass of dude, so a backstabbee gets a generous "donation" of speed.
+					corpses[victim.update_hp(-2*math.Sqrt(stabber.hitpoints))] = true // Double damage!
+					ddx := (stabber.dx - victim.dx)
+					victim.dx += 3.0 * ddx
+					victim.dy += math.Abs(ddx)
+
+					fmt.Println(stabber.name, "backstabs", victim.name, "down to", victim.hitpoints)
+				}
+
+				if d1.hitpoints < 0 {
+					morgue = append(morgue, d1)
+				}
+				if d2.hitpoints < 0 {
+					morgue = append(morgue, d2)
+				}
+			}
+		}
+		for _, d := range morgue {
+			delete(dudes, d.name)
+		}
+
+		for _, d := range dudes {
+			old_d_y := d.y
+			d.Tick(tick.Seconds())
+
+			// collision with ground
+			if d.y < 0 {
+				d.y = 0
+				d.dy = 0 // Todo: bounce?
+			}
+
+			// collision with platforms
+			for _, plat := range active_platforms {
+				if plat.rect.Min.X < d.x && d.x < plat.rect.Max.X &&
+					d.y < plat.rect.Max.Y && old_d_y > plat.rect.Min.Y {
+					d.dy = 0
+					d.y = plat.rect.Max.Y
+				}
+			}
+		}
+
+		delete(corpses, nil)
+
+		for d := range corpses {
+			old_d_y := d.y
+			d.Tick(tick.Seconds())
+
+			// collision with ground
+			if d.y < 0 {
+				d.y = 0
+				if d.dy < 0 {
+					d.dy = -0.4 * d.dy
+				}
+			}
+
+			// collision with platforms
+			for _, plat := range active_platforms {
+				if plat.rect.Min.X < d.x && d.x < plat.rect.Max.X &&
+					d.y < plat.rect.Max.Y && old_d_y > plat.rect.Min.Y {
+					if d.dy < 0 {
+						d.dy = -0.4 * d.dy
+					} else {
+						d.dy = 0
+					}
+					d.y = plat.rect.Max.Y
+				}
+			}
+		}
+
+		// Dude-corpse interaction: Teabagging!
+		for c, _ := range corpses {
+			for _, d := range dudes {
+				if d.teabagee != nil {
+					// already teabagging
+					continue
+				}
+
+				//Close enough?
+				if math.Abs(d.x-c.x) > 7 || math.Abs(d.y-c.y) > 1 {
+					continue
+				}
+
+				d.teabag_cooldown = cfg.TeabagTime
+				d.teabagee = c
+				d.dx = 0
+
+				// Note: once teabagging starts, we let it finish even if the teabagger gets launched into orbit.
+				// This is considered to be a feature, because it is funny.
+			}
+		}
+
+		for _, d := range dudes {
+			if d.teabagee != nil && d.teabag_cooldown == 0 {
+				d.update_hp(+20)
+				//d.dx = 150 * (rand.Float64() - 0.5)
+
+				delete(corpses, d.teabagee)
+				d.teabagee = nil
+			}
+		}
+
+		select {
+		case message := <-messages:
+			name := message["username"]
+			if name == "" || (name == last_user && message["message-text"] == last_message) {
+				continue
+			}
+			last_user = name
+			last_message = message["message-text"]
+
+			text := name + ": " + message["message-text"]
+			queued_platforms = append(queued_platforms, make_platform(text, cfg.Atlas))
+
+			if dudes[name] == nil {
+				dudes[name] = make_dude(name, cfg.Atlas, cfg.ArenaWidth, cfg.ArenaHeight)
+			}
+
+		default:
+
+			// DRAWING STARTS HERE
+			win.Clear(colour.Background)
+
+			for _, plat := range active_platforms {
+				plat.Draw(win)
+			}
+			for _, d := range dudes {
+				d.Draw(win)
+			}
+			for c := range corpses {
+				c.Draw(win)
+			}
+			win.Update()
+			// DRAWING ENDS HERE
+		}
+	}
+
+}
