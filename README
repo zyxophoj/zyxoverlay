@@ -1,0 +1,6 @@
+ZYXOVERLAY
+
+This is a Twitch chat "Fight Club" overlay.  Chat lines become rising platforms, and chatters become stick figures which fight to the death.
+(Although anyone can respwan at any time by chatting again.)
+
+Chat integration is achieved via a browser parasite; this is lame and will probably get replaced with Twitch's actual event API at some point. 
