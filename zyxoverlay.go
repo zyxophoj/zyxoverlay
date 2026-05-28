@@ -310,7 +310,7 @@ func (d *dude) Tick(seconds float64) {
 	if d.teabag_cooldown < 0 {
 		d.teabag_cooldown = 0
 	}
-	
+
 	if d.dx == 0 && d.teabag_cooldown == 0 {
 		d.dx = 150 * (rand.Float64() - 0.5)
 	}
@@ -342,7 +342,7 @@ func (d *dude) update_hp(change float64) *corpse {
 	fmt.Fprintln(d.hitpoints_text, strconv.Itoa(int(d.hitpoints)))
 
 	if d.hitpoints < 0 && !(old_hitpoints < 0) {
-		return make_corpse(d.name, d.x, d.y)
+		return make_corpse(d.name, d.x, d.y, d.dx, d.dy)
 	}
 
 	return nil
@@ -369,14 +369,14 @@ type corpse struct {
 	dx, dy float64
 }
 
-func make_corpse(name string, x float64, y float64) *corpse {
+func make_corpse(name string, x float64, y float64, dx float64, dy float64) *corpse {
 	cfg, colour := get_config()
 
 	name_text := text.New(pixel.V(0, 0), cfg.Atlas)
 	fmt.Fprintln(name_text, name)
 	name_text.Color = colour.Text
 
-	return &corpse{name, name_text, pixel.V(-0.5*name_text.BoundsOf(name).W(), 30), x, y, 0, 0}
+	return &corpse{name, name_text, pixel.V(-0.5*name_text.BoundsOf(name).W(), 30), x, y, dx, dy}
 }
 
 func (c *corpse) Draw(target pixel.Target) {
@@ -393,6 +393,14 @@ func (c *corpse) Tick(seconds float64) {
 
 	c.x += c.dx * seconds
 	c.y += c.dy * seconds
+
+	if (c.x < 0 && c.dx < 0) || (c.x > cfg.ArenaWidth && c.dx > 0) {
+		c.dx = -0.9 * c.dx
+	}
+
+	// Corpses can not walk, so there is drag.
+	// TODO: this should really only apply when the corpse is on a platform or on the ground
+	c.dx *= math.Exp(-seconds * 0.5)
 }
 
 // run_fight_club does something we don't talk about
@@ -497,12 +505,13 @@ func run_fight_club(messages chan map[string]string) {
 
 				if d1.dx*d2.dx <= 0 {
 					//Moving towards each other
-					damage1, damage2 := math.Sqrt(d1.hitpoints), math.Sqrt(d2.hitpoints)
-					corpses[d1.update_hp(-damage2)] = true
-					corpses[d2.update_hp(-damage1)] = true
 					d1.dx, d2.dx = -0.9*d1.dx, -0.9*d2.dx
 					d1.dy += 20
 					d2.dy += 20
+					// update_hp last so that corpses properly inherit position and velocity
+					damage1, damage2 := math.Sqrt(d1.hitpoints), math.Sqrt(d2.hitpoints)
+					corpses[d1.update_hp(-damage2)] = true
+					corpses[d2.update_hp(-damage1)] = true
 
 					fmt.Println(d1.name, "hits", d2.name, "down to", d2.hitpoints)
 					fmt.Println(d2.name, "hits", d1.name, "down to", d1.hitpoints)
@@ -517,10 +526,10 @@ func run_fight_club(messages chan map[string]string) {
 					// balance consideration.  Dudes get backstabbed when they are walking too slowly.
 					// We don't want a permanently-slow-moving (and therefore, -backstab-receiving)
 					// subclass of dude, so a backstabbee gets a generous "donation" of speed.
-					corpses[victim.update_hp(-2*math.Sqrt(stabber.hitpoints))] = true // Double damage!
 					ddx := (stabber.dx - victim.dx)
 					victim.dx += 3.0 * ddx
 					victim.dy += math.Abs(ddx)
+					corpses[victim.update_hp(-2*math.Sqrt(stabber.hitpoints))] = true // Double damage!
 
 					fmt.Println(stabber.name, "backstabs", victim.name, "down to", victim.hitpoints)
 				}
@@ -601,6 +610,8 @@ func run_fight_club(messages chan map[string]string) {
 				d.teabag_cooldown = cfg.TeabagTime
 				d.teabagee = c
 				d.dx = 0
+				c.dx = 0
+				c.dy = 0
 
 				// Note: once teabagging starts, we let it finish even if the teabager gets launched into orbit.
 				// This is considered to be a feature, because it is funny.
