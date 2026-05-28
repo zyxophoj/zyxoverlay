@@ -41,11 +41,13 @@ func main() {
 
 			raw_messages <- body
 			fallthrough
-		case "OPTIONS": // We must allow this to avoid getting blocked by cross-site scripting security.
+		case "OPTIONS":
 			w.Header()["Access-Control-Allow-Origin"] = []string{"https://www.twitch.tv"}
+			//fmt.Println("Responding to", req.Method,"with",200)
 			w.WriteHeader(200)
 
-		default: // Whatever this is, we don't do it.
+		default:
+			// Whatever this is, we don't do it
 			w.WriteHeader(405)
 		}
 	})
@@ -154,7 +156,7 @@ func get_config() (*Config, *Colours) {
 	}
 
 	// This is intended as an overlay, which means the background colour should be something
-	// that works well with chroma key filtering.  That is why it is snot green.
+	// that works well with chroma key filtering.  That is why it is snot green and not black.
 	FIGHT_CLUB_GLOBALS.colours = &Colours{
 		Background:    color.RGBA{0, 0xFF, 0, 0xFF},
 		Text:          color.RGBA{0xFF, 0xFF, 0xFF, 0xFF},
@@ -418,7 +420,7 @@ func run_fight_club(messages chan map[string]string) {
 	dudes := map[string]*dude{}
 	corpses := map[*corpse]bool{}
 
-	pushing := false  // True if platforms are moving upwards
+	pushing := false
 	push_height := 0.0
 
 	old_time := time.Now()
@@ -435,7 +437,7 @@ func run_fight_club(messages chan map[string]string) {
 			}
 		}
 
-		// New platforms need to wake up the pushing mechanic
+		// New platforms wake up pushing
 		if !pushing && len(queued_platforms) > 0 {
 			active_platforms = append(active_platforms, queued_platforms[0])
 			for len(active_platforms) > 5 {
@@ -448,7 +450,7 @@ func run_fight_club(messages chan map[string]string) {
 		}
 
 		if pushing {
-			// To avoid a backlong, lnog queues increase p[using speed
+			// To reduce backlog, long queues increase pushing speed
 			push_change := tick.Seconds() * cfg.PushSpeed * float64(1+len(queued_platforms))
 			push_height += push_change
 			if push_height > cfg.PushHeight {
@@ -600,7 +602,7 @@ func run_fight_club(messages chan map[string]string) {
 				d.teabagee = c
 				d.dx = 0
 
-				// Note: once teabagging starts, we let it finish even if the teabagger gets launched into orbit.
+				// Note: once teabagging starts, we let it finish even if the teabager gets launched into orbit.
 				// This is considered to be a feature, because it is funny.
 			}
 		}
