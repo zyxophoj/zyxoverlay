@@ -1,11 +1,12 @@
-module zyxobot.go
+module zyxoverlay
 
-go 1.24.4
+go 1.25.0
 
 require (
 	github.com/gopxl/pixel/v2 v2.3.0
-	golang.org/x/image v0.19.0
-	golang.org/x/net v0.50.0
+	golang.org/x/image v0.41.0
+	golang.org/x/net v0.55.0
+	gopkg.in/ini.v1 v1.67.2
 )
 
 require (

@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -18,10 +19,13 @@ import (
 	_ "image/png"
 
 	"golang.org/x/image/font/basicfont"
+	"gopkg.in/ini.v1"
 
 	"github.com/gopxl/pixel/v2"
 	"github.com/gopxl/pixel/v2/backends/opengl"
 	"github.com/gopxl/pixel/v2/ext/text"
+
+	"zyxoverlay/utils"
 )
 
 func main() {
@@ -101,79 +105,119 @@ func main() {
 	opengl.Run(func() { run_fight_club(messages) })
 }
 
-// Fight club stuff starts here - load from file does not yet exist
-
+// Fight club stuff starts here
 type Config struct {
-	TextHeight         float64 `json:"text_height"`
-	ArenaWidth         float64 `json:"arena_width"`
-	ArenaHeight        float64 `json:"arena_height"`
-	PushHeight         float64 `json:"push_height"`
-	PushSpeed          float64 `json:"push_speed"`
-	MaxActivePlatforms int     `json:"max_active_platforms"`
-	Gravity            float64 `json:"gravity"`
-	DudeWidth          float64 `json:"dude_width"`
-	DudeHeight         float64 `json:"dude_height"`
-	PlatformPadding    float64 `json:"platform_padding"`
-	TeabagTime         float64 `json:"teabag_time"`
+	TextHeight         float64
+	ArenaWidth         float64
+	ArenaHeight        float64
+	PushHeight         float64
+	PushSpeed          float64
+	MaxActivePlatforms int
+	Gravity            float64
+	DudeWidth          float64
+	DudeHeight         float64
+	PlatformPadding    float64
+	TeabagTime         float64
 	Atlas              *text.Atlas
 }
 
 type Colours struct {
-	Background    color.RGBA `json:"background"`
-	Text          color.RGBA `json:"text"`
-	HitpointsText color.RGBA `json:"hitpoints_text"`
-	Platform      color.RGBA `json:"platform"`
+	Background    color.RGBA
+	NameText      color.RGBA
+	PlatformText  color.RGBA
+	HitpointsText color.RGBA
+	Platform      color.RGBA
 }
 
 type fight_club_globals struct {
-	cfg     *Config
-	colours *Colours
-
+	cfg     Config
+	colours Colours
+	atlas   *text.Atlas
 	sprites map[string]*pixel.Sprite
 }
 
-var FIGHT_CLUB_GLOBALS = &fight_club_globals{nil, nil, map[string]*pixel.Sprite{}}
+var FIGHT_CLUB_GLOBALS = &fight_club_globals{}
 
-func get_config() (*Config, *Colours) {
+func get_config() (*Config, *Colours, *text.Atlas) {
+	if FIGHT_CLUB_GLOBALS.atlas == nil {
 
-	if FIGHT_CLUB_GLOBALS.cfg != nil {
-		return FIGHT_CLUB_GLOBALS.cfg, FIGHT_CLUB_GLOBALS.colours
+		FIGHT_CLUB_GLOBALS.cfg = Config{
+			TextHeight:         13,
+			ArenaWidth:         1280,
+			ArenaHeight:        480,
+			PushHeight:         75,
+			PushSpeed:          15,
+			MaxActivePlatforms: 5,
+			Gravity:            -250.0, // up is positive.  Since dudes are 50 pixels high, this is roughly equivalent to standard 9.8ms^-2.
+			DudeWidth:          20,
+			DudeHeight:         50,
+			PlatformPadding:    5.0,
+			TeabagTime:         0.8,
+		}
+
+		FIGHT_CLUB_GLOBALS.colours = Colours{
+			Background:    color.RGBA{0, 0, 0, 0xFF},
+			PlatformText:  color.RGBA{0xFF, 0xFF, 0xFF, 0xFF},
+			NameText:      color.RGBA{0xFF, 0, 0, 0xFF},
+			HitpointsText: color.RGBA{0x80, 0, 0, 0xFF},
+			Platform:      color.RGBA{0, 0, 0x80, 0xFF},
+		}
+
+		ini_data, err := ini.Load("zyxoverlay.ini")
+		if err != nil {
+			fmt.Println("Failed to load ini file!!!", err)
+		} else {
+			sec := ini_data.Section("constants")
+			sec.MapTo(&FIGHT_CLUB_GLOBALS.cfg)
+
+			sec = ini_data.Section("colours")
+			// ini.MapTo fails with no error, so we don't use it here
+			rc := reflect.ValueOf(&FIGHT_CLUB_GLOBALS.colours).Elem() //reflect pointer and follow it in reflectland to make things addressible
+			for i := 0; i < rc.NumField(); i++ {
+				name := rc.Type().Field(i).Name
+				if sec.HasKey(name) {
+					col, err := utils.Colour_from_RGBstring(sec.Key(name).String())
+					if err != nil {
+						fmt.Println("Could not decipher ", name, err)
+						continue
+					}
+
+					*(rc.Field(i).Addr().Interface().(*color.RGBA)) = col
+				}
+			}
+		}
+
+		// TODO: try to pick a font based on TextHeight
+		FIGHT_CLUB_GLOBALS.atlas = text.NewAtlas(basicfont.Face7x13, text.ASCII)
 	}
 
-	FIGHT_CLUB_GLOBALS.cfg = &Config{
-		TextHeight:         13,
-		ArenaWidth:         1280,
-		ArenaHeight:        480,
-		PushHeight:         60,
-		PushSpeed:          15,
-		MaxActivePlatforms: 5,
-		Gravity:            -250.0, // up is positive.  Since dudes are 50 pixels high, this is roughly equivalent to standard 9.8ms^-2.
-		DudeWidth:          20,
-		DudeHeight:         50,
-		PlatformPadding:    5.0,
-		TeabagTime:         0.8,
-		Atlas:              text.NewAtlas(basicfont.Face7x13, text.ASCII),
-	}
-
-	// This is intended as an overlay, which means the background colour should be something
-	// that works well with chroma key filtering.  That is why it is snot green and not black.
-	FIGHT_CLUB_GLOBALS.colours = &Colours{
-		Background:    color.RGBA{0, 0xFF, 0, 0xFF},
-		Text:          color.RGBA{0xFF, 0xFF, 0xFF, 0xFF},
-		HitpointsText: color.RGBA{0x80, 0, 0, 0xFF},
-		Platform:      color.RGBA{0, 0, 0x80, 0xFF},
-	}
-
-	return FIGHT_CLUB_GLOBALS.cfg, FIGHT_CLUB_GLOBALS.colours
+	return &FIGHT_CLUB_GLOBALS.cfg, &FIGHT_CLUB_GLOBALS.colours, FIGHT_CLUB_GLOBALS.atlas
 }
 
-func get_sprite(name string) *pixel.Sprite {
-	current := FIGHT_CLUB_GLOBALS.sprites[name]
+
+type sprite int
+
+const (
+	Dude sprite = iota
+	DudeTeabag
+	Corpse
+)
+
+// get_sprite gets a sprite
+// only the first call loads a file; subsequent calls use a cached
+// The type-safety here is a bit illusory since any int literal can be auto-converted to sprite.
+func get_sprite(name sprite) *pixel.Sprite {
+	filename := "images/" + map[sprite]string{
+		Dude:       "dude",
+		DudeTeabag: "dudeteabag",
+		Corpse:     "corpse",
+	}[name] + ".png"
+	current := FIGHT_CLUB_GLOBALS.sprites[filename]
 	if current != nil {
 		return current
 	}
 
-	file, err := os.Open(name + ".png")
+	file, err := os.Open(filename)
 	if err != nil {
 		fmt.Println(err)
 		return nil
@@ -187,7 +231,10 @@ func get_sprite(name string) *pixel.Sprite {
 	dude_pic := pixel.PictureDataFromImage(img)
 	out := pixel.NewSprite(dude_pic, dude_pic.Bounds())
 
-	FIGHT_CLUB_GLOBALS.sprites[name] = out
+	if FIGHT_CLUB_GLOBALS.sprites[filename] == nil {
+		FIGHT_CLUB_GLOBALS.sprites = map[string]*pixel.Sprite{}
+	}
+	FIGHT_CLUB_GLOBALS.sprites[filename] = out
 	return out
 }
 
@@ -217,8 +264,8 @@ type platform struct {
 	age float64
 }
 
-func make_platform(message string, atlas *text.Atlas) *platform {
-	cfg, colours := get_config()
+func make_platform(message string) *platform {
+	cfg, colours, atlas := get_config()
 
 	plat_text := text.New(pixel.V(0, 0), atlas)
 	width := plat_text.BoundsOf(message).W()
@@ -226,7 +273,7 @@ func make_platform(message string, atlas *text.Atlas) *platform {
 		message = "[WALL Of TEXT]"
 		width = plat_text.BoundsOf(message).W()
 	}
-	plat_text.Color = colours.Text
+	plat_text.Color = colours.PlatformText
 	fmt.Fprintln(plat_text, message)
 	plat_width := width + 2*5
 	plat_height := cfg.TextHeight + 2*1
@@ -273,12 +320,12 @@ type dude struct {
 	// TODO: mode?
 }
 
-func make_dude(name string, atlas *text.Atlas, arena_width float64, arena_height float64) *dude {
-	_, colour := get_config()
+func make_dude(name string, arena_width float64, arena_height float64) *dude {
+	_, colour, atlas := get_config()
 
 	dude_text := text.New(pixel.V(0, 0), atlas)
+	dude_text.Color = colour.NameText
 	fmt.Fprintln(dude_text, name)
-	dude_text.Color = colour.Text
 
 	dude_width := 20
 
@@ -296,7 +343,7 @@ func make_dude(name string, atlas *text.Atlas, arena_width float64, arena_height
 }
 
 func (d *dude) Tick(seconds float64) {
-	cfg, _ := get_config()
+	cfg, _, _ := get_config()
 
 	d.dy += cfg.Gravity * seconds
 	if (d.x < 0 && d.dx < 0) || (d.x > cfg.ArenaWidth && d.dx > 0) {
@@ -317,12 +364,12 @@ func (d *dude) Tick(seconds float64) {
 }
 
 func (d *dude) Draw(target pixel.Target) {
-	cfg, _ := get_config()
+	cfg, _, _ := get_config()
 
 	position := pixel.V(d.x, d.y)
 	sprite := dude_sprite()
 	if d.teabag_cooldown > 0 {
-		sprite = []*pixel.Sprite{sprite, dude_teabagging_sprite()}[int(5.0*d.teabag_cooldown/cfg.TeabagTime)%2]
+		sprite = []*pixel.Sprite{sprite, get_sprite(DudeTeabag)}[int(5.0*d.teabag_cooldown/cfg[TeabagTime])%2]
 	}
 	height := sprite.Frame().H()
 
@@ -370,11 +417,11 @@ type corpse struct {
 }
 
 func make_corpse(name string, x float64, y float64, dx float64, dy float64) *corpse {
-	cfg, colour := get_config()
+	_, colour, atlas := get_config()
 
-	name_text := text.New(pixel.V(0, 0), cfg.Atlas)
+	name_text := text.New(pixel.V(0, 0), atlas)
+	name_text.Color = colour.NameText
 	fmt.Fprintln(name_text, name)
-	name_text.Color = colour.Text
 
 	return &corpse{name, name_text, pixel.V(-0.5*name_text.BoundsOf(name).W(), 30), x, y, dx, dy}
 }
@@ -387,7 +434,7 @@ func (c *corpse) Draw(target pixel.Target) {
 }
 
 func (c *corpse) Tick(seconds float64) {
-	cfg, _ := get_config()
+	cfg, _, _ := get_config()
 
 	c.dy += cfg.Gravity * seconds
 
@@ -410,7 +457,7 @@ func run_fight_club(messages chan map[string]string) {
 	last_user := "sdfhjasldfhal"
 	last_message := "sjklfhasjkld2"
 
-	cfg, colour := get_config()
+	cfg, colour, _ := get_config()
 
 	wcfg := opengl.WindowConfig{
 		Title:  "Do not talk about fight club",
@@ -638,10 +685,10 @@ func run_fight_club(messages chan map[string]string) {
 			last_message = message["message-text"]
 
 			text := name + ": " + message["message-text"]
-			queued_platforms = append(queued_platforms, make_platform(text, cfg.Atlas))
+			queued_platforms = append(queued_platforms, make_platform(text))
 
 			if dudes[name] == nil {
-				dudes[name] = make_dude(name, cfg.Atlas, cfg.ArenaWidth, cfg.ArenaHeight)
+				dudes[name] = make_dude(name, cfg.ArenaWidth, cfg.ArenaHeight)
 			}
 
 		default:
