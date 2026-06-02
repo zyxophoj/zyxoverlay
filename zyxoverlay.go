@@ -198,7 +198,7 @@ func get_config() (*Config, *Colours, *text.Atlas) {
 type sprite int
 
 const (
-	Dude sprite = iota
+	Dude        sprite=iota
 	DudeTeabag
 	Corpse
 )
@@ -367,7 +367,7 @@ func (d *dude) Draw(target pixel.Target) {
 	cfg, _, _ := get_config()
 
 	position := pixel.V(d.x, d.y)
-	sprite := dude_sprite()
+	sprite := get_sprite(Dude)
 	if d.teabag_cooldown > 0 {
 		sprite = []*pixel.Sprite{sprite, get_sprite(DudeTeabag)}[int(5.0*d.teabag_cooldown/cfg[TeabagTime])%2]
 	}
@@ -395,18 +395,6 @@ func (d *dude) update_hp(change float64) *corpse {
 	return nil
 }
 
-func dude_sprite() *pixel.Sprite {
-	return get_sprite("dude")
-}
-
-func dude_teabagging_sprite() *pixel.Sprite {
-	return get_sprite("dudeteabag")
-}
-
-func corpse_sprite() *pixel.Sprite {
-	return get_sprite("corpse")
-}
-
 type corpse struct {
 	name        string
 	name_text   *text.Text
@@ -430,7 +418,7 @@ func (c *corpse) Draw(target pixel.Target) {
 	position := pixel.V(c.x, c.y)
 
 	c.name_text.Draw(target, pixel.IM.Moved(c.name_offset.Add(position)))
-	corpse_sprite().Draw(target, pixel.IM.Moved(position.Add(pixel.V(0, 10))))
+	get_sprite(Corpse).Draw(target, pixel.IM.Moved(position.Add(pixel.V(0, 10))))
 }
 
 func (c *corpse) Tick(seconds float64) {
