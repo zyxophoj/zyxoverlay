@@ -194,11 +194,10 @@ func get_config() (*Config, *Colours, *text.Atlas) {
 	return &FIGHT_CLUB_GLOBALS.cfg, &FIGHT_CLUB_GLOBALS.colours, FIGHT_CLUB_GLOBALS.atlas
 }
 
-
 type sprite int
 
 const (
-	Dude        sprite=iota
+	Dude sprite = iota
 	DudeTeabag
 	Corpse
 )
@@ -369,7 +368,7 @@ func (d *dude) Draw(target pixel.Target) {
 	position := pixel.V(d.x, d.y)
 	sprite := get_sprite(Dude)
 	if d.teabag_cooldown > 0 {
-		sprite = []*pixel.Sprite{sprite, get_sprite(DudeTeabag)}[int(5.0*d.teabag_cooldown/cfg[TeabagTime])%2]
+		sprite = []*pixel.Sprite{sprite, get_sprite(DudeTeabag)}[int(5.0*d.teabag_cooldown/cfg.TeabagTime)%2]
 	}
 	height := sprite.Frame().H()
 
