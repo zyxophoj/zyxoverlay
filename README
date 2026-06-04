@@ -1,6 +1,31 @@
 ZYXOVERLAY
 
-This is a Twitch chat "Fight Club" overlay.  Chat lines become rising platforms, and chatters become stick figures which fight to the death.
-(Although anyone can respwan at any time by chatting again.)
+This is a Twitch chat "Fight Club" overlay.  Chat lines become rising platforms, and chatters become stick figures which fight to the death.   Although anyone who is "dead" can respawn at any time by chatting again.
 
-Chat integration is achieved via a browser parasite; this is lame and will probably get replaced with Twitch's actual event API at some point. 
+Chat integration is achieved via a browser parasite; this is lame and will probably get replaced with Twitch's actual event API at some point.  The one hilarious advantage of the parasite is that I can test this on Twitch chats that are not my own.
+
+
+How to use it
+
+Run zyxoverlay.exe
+In a browser, inspect the twitch chat and copy the contents of the browser_parasite.js file into the console.
+
+
+How to compile it (Windows)
+
+If my experience is anything to go by, you're going to have a bad time.  The core problem is that we use the Pixel2 library, which needs GCO, which needs the GCC toolchain, which you probably don't have.  So...
+
+Install Go-for-Windows (https://go.dev/doc/install)
+Install MSYS2 
+Follow the instructions at: https://github.com/gopxl/pixel/blob/main/docs/Compilation/Building-Pixel-on-Windows.md .  MSYS offers several terminals, each with a different environment.  I currently only have this working in the MSYS2 MINGW64 terminal, but that's all you need.
+
+To actually build it, run the command:
+go build zyxoverlay.go
+or
+go run zyxoverlay.go
+
+If MSYS can't find go, modify the path so it can, or use something hideous like "/c/Program\ Files/Go/bin/go", depending on where go is installed. 
+
+
+
+
