@@ -148,7 +148,7 @@ func get_config() (*Config, *Colours, *text.Atlas) {
 			PushHeight:         75,
 			PushSpeed:          15,
 			MaxActivePlatforms: 5,
-			Gravity:            -250.0, // up is positive.  Since dudes are 50 pixels high, this is roughly equivalent to standard 9.8ms^-2.
+			Gravity:            -250.0,
 			DudeWidth:          20,
 			DudeHeight:         50,
 			PlatformPadding:    5.0,
@@ -171,7 +171,7 @@ func get_config() (*Config, *Colours, *text.Atlas) {
 			sec.MapTo(&FIGHT_CLUB_GLOBALS.cfg)
 
 			sec = ini_data.Section("colours")
-			// ini.MapTo fails with no error, so we don't use it here
+			// ini.MapTo fails with no error, probably because it does not understand color.RGBA, so we don't use it here
 			rc := reflect.ValueOf(&FIGHT_CLUB_GLOBALS.colours).Elem() //reflect pointer and follow it in reflectland to make things addressible
 			for i := 0; i < rc.NumField(); i++ {
 				name := rc.Type().Field(i).Name
@@ -319,8 +319,8 @@ type dude struct {
 	// TODO: mode?
 }
 
-func make_dude(name string, arena_width float64, arena_height float64) *dude {
-	_, colour, atlas := get_config()
+func make_dude(name string) *dude {
+	cfg, colour, atlas := get_config()
 
 	dude_text := text.New(pixel.V(0, 0), atlas)
 	dude_text.Color = colour.NameText
@@ -334,7 +334,7 @@ func make_dude(name string, arena_width float64, arena_height float64) *dude {
 
 	return &dude{name, dude_text, hp_text,
 		dude_width, 50,
-		float64(dude_width)/2.0 + rand.Float64()*(arena_width-float64(dude_width)), arena_height,
+		float64(dude_width)/2.0 + rand.Float64()*(cfg.ArenaWidth-float64(dude_width)), cfg.ArenaHeight,
 		0, 0,
 		pixel.V(-0.5*dude_text.BoundsOf(name).W(), 50),
 		99, 0, 0, nil,
@@ -439,8 +439,6 @@ func (c *corpse) Tick(seconds float64) {
 
 // run_fight_club does something we don't talk about
 func run_fight_club(messages chan map[string]string) {
-	const TEXT_HEIGHT = 13 // because hard-coded basicfont.Face7x13.
-
 	last_user := "sdfhjasldfhal"
 	last_message := "sjklfhasjkld2"
 
@@ -675,7 +673,7 @@ func run_fight_club(messages chan map[string]string) {
 			queued_platforms = append(queued_platforms, make_platform(text))
 
 			if dudes[name] == nil {
-				dudes[name] = make_dude(name, cfg.ArenaWidth, cfg.ArenaHeight)
+				dudes[name] = make_dude(name)
 			}
 
 		default:
