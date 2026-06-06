@@ -93,8 +93,9 @@ func main() {
 		}
 	}()
 
+	cfg, _, _:=get_config()
 	go func() {
-		err := http.ListenAndServe(":80", nil)
+		err := http.ListenAndServe(fmt.Sprintf(":%v", cfg.ParasitePort), nil)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(-1)
@@ -107,6 +108,7 @@ func main() {
 
 // Fight club stuff starts here
 type Config struct {
+	ParasitePort       int
 	TextHeight         float64
 	ArenaWidth         float64
 	ArenaHeight        float64
@@ -142,6 +144,7 @@ func get_config() (*Config, *Colours, *text.Atlas) {
 	if FIGHT_CLUB_GLOBALS.atlas == nil {
 
 		FIGHT_CLUB_GLOBALS.cfg = Config{
+			ParasitePort:       80,
 			TextHeight:         13,
 			ArenaWidth:         1280,
 			ArenaHeight:        480,

@@ -1,6 +1,6 @@
 new MutationObserver(function(muts, obs){for (const mut of muts){
 		for(let node of mut.addedNodes){
-			fetch('http://localhost/zyxoverlay', {
+			fetch('http://localhost:3000/zyxoverlay', {
 				method: 'POST',
 				headers: {
 				'Accept': 'application/json',
