@@ -118,8 +118,12 @@ type Config struct {
 	Gravity            float64
 	DudeWidth          float64
 	DudeHeight         float64
+	MaxWalkSpeed       float64
+	MinWalkSpeed       float64
 	PlatformPadding    float64
 	TeabagTime         float64
+	TeabagHeal         float64
+	CorpseBounciness   float64
 	Atlas              *text.Atlas
 }
 
@@ -154,8 +158,12 @@ func get_config() (*Config, *Colours, *text.Atlas) {
 			Gravity:            -250.0,
 			DudeWidth:          20,
 			DudeHeight:         50,
+			MaxWalkSpeed:       150,
+			MinWalkSpeed:       50,
 			PlatformPadding:    5.0,
 			TeabagTime:         0.8,
+			TeabagHeal:         20,
+			CorpseBounciness:   0.4,
 		}
 
 		FIGHT_CLUB_GLOBALS.colours = Colours{
@@ -361,7 +369,7 @@ func (d *dude) Tick(seconds float64) {
 	}
 
 	if d.dx == 0 && d.teabag_cooldown == 0 {
-		d.dx = 150 * (rand.Float64() - 0.5)
+		d.dx = (cfg.MinWalkSpeed + (rand.Float64() * (cfg.MaxWalkSpeed - cfg.MinWalkSpeed))) * float64(rand.Intn(2)*2-1)
 	}
 }
 
@@ -611,7 +619,7 @@ func run_fight_club(messages chan map[string]string) {
 			if d.y < 0 {
 				d.y = 0
 				if d.dy < 0 {
-					d.dy = -0.4 * d.dy
+					d.dy = -cfg.CorpseBounciness * d.dy
 				}
 			}
 
