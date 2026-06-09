@@ -25,6 +25,7 @@ import (
 	"github.com/gopxl/pixel/v2/backends/opengl"
 	"github.com/gopxl/pixel/v2/ext/text"
 
+	"zyxoverlay/batman_words"
 	"zyxoverlay/utils"
 )
 
@@ -133,6 +134,7 @@ type Colours struct {
 	PlatformText  color.RGBA
 	HitpointsText color.RGBA
 	Platform      color.RGBA
+	Violence      color.RGBA // It makes sense in context, I promise
 }
 
 type fight_club_globals struct {
@@ -172,6 +174,7 @@ func get_config() (*Config, *Colours, *text.Atlas) {
 			NameText:      color.RGBA{0xFF, 0, 0, 0xFF},
 			HitpointsText: color.RGBA{0x80, 0, 0, 0xFF},
 			Platform:      color.RGBA{0, 0, 0x80, 0xFF},
+			Violence:      color.RGBA{0x80, 0x80, 0xFF, 0xFF},
 		}
 
 		ini_data, err := ini.Load("zyxoverlay.ini")
@@ -448,13 +451,57 @@ func (c *corpse) Tick(seconds float64) {
 	c.dx *= math.Exp(-seconds * 0.5)
 }
 
+type effect struct {
+	text        string
+	text_text   *text.Text
+	text_offset pixel.Vec
+	duration    float64
+	age         float64
+
+	x, y   float64 //bottom centre
+	dx, dy float64
+}
+
+func make_effect(x float64, y float64, str string) *effect {
+	cfg, colour, atlas := get_config()
+	text_text := text.New(pixel.V(0, 0), atlas)
+	text_text.Color = colour.Violence
+	fmt.Fprintln(text_text, str)
+
+	// Batman words served to conceal some truly atrocious fight choreograpy.  Since we are absolutely confident
+	// in our fight choreograpy, we spawn above the fighters (y=DudeHeight) for clear visibility.
+	// Randomness of velocity improves clarity a little bit when there is a gang-teabagging.
+	return &effect{str, text_text, pixel.V(-0.5*text_text.BoundsOf(str).W(), cfg.DudeHeight), 2, 0, x, y, rand.Float64()*60.0 - 30.0, rand.Float64()*40.0 + 30.0}
+}
+
+func (e *effect) Tick(seconds float64) {
+	e.x += e.dx * seconds
+	e.y += e.dy * seconds
+
+	e.age += seconds
+}
+
+func (e *effect) Draw(target pixel.Target) {
+	position := pixel.V(e.x, e.y)
+	e.text_text.Draw(target, pixel.IM.Moved(position.Add(e.text_offset)))
+}
+
+func (e *effect) IsExpired() bool {
+	return e.age > e.duration
+}
+
+func rand_from[K any](src []K) K {
+	return src[rand.Intn(len(src))]
+}
+
 // run_fight_club does something we don't talk about
 func run_fight_club(messages chan map[string]string) {
 	last_user := "sdfhjasldfhal"
 	last_message := "sjklfhasjkld2"
+	tea_words := []string{"YORKSHIRE", "SPIFF", "CHA", "EARL GREY, HOT", "ROSIE", "PG", "TETLEY"}
+	excitement := []string{"!", "!!", "!!!"}
 
 	cfg, colour, _ := get_config()
-
 	wcfg := opengl.WindowConfig{
 		Title:  "Do not talk about fight club",
 		Bounds: pixel.R(0, 0, cfg.ArenaWidth, cfg.ArenaHeight),
@@ -470,6 +517,7 @@ func run_fight_club(messages chan map[string]string) {
 	active_platforms := []*platform{}
 	dudes := map[string]*dude{}
 	corpses := map[*corpse]bool{}
+	effects := map[*effect]bool{}
 
 	pushing := false
 	push_height := 0.0
@@ -556,6 +604,8 @@ func run_fight_club(messages chan map[string]string) {
 					corpses[d1.update_hp(-damage2)] = true
 					corpses[d2.update_hp(-damage1)] = true
 
+					effects[make_effect((d1.x+d2.x)/2.0, (d1.y+d2.y)/2.0, batman_words.Get_word()+rand_from(excitement))] = true
+
 					fmt.Println(d1.name, "hits", d2.name, "down to", d2.hitpoints)
 					fmt.Println(d2.name, "hits", d1.name, "down to", d1.hitpoints)
 				} else {
@@ -573,6 +623,8 @@ func run_fight_club(messages chan map[string]string) {
 					victim.dx += 3.0 * ddx
 					victim.dy += math.Abs(ddx)
 					corpses[victim.update_hp(-2*math.Sqrt(stabber.hitpoints))] = true // Double damage!
+
+					effects[make_effect((d1.x+d2.x)/2.0, (d1.y+d2.y)/2.0, batman_words.Get_word()+rand_from(excitement))] = true
 
 					fmt.Println(stabber.name, "backstabs", victim.name, "down to", victim.hitpoints)
 				}
@@ -656,6 +708,8 @@ func run_fight_club(messages chan map[string]string) {
 				c.dx = 0
 				c.dy = 0
 
+				effects[make_effect(d.x, d.y, rand_from(tea_words)+rand_from(excitement))] = true
+
 				// Note: once teabagging starts, we let it finish even if the teabager gets launched into orbit.
 				// This is considered to be a feature, because it is funny.
 			}
@@ -663,12 +717,23 @@ func run_fight_club(messages chan map[string]string) {
 
 		for _, d := range dudes {
 			if d.teabagee != nil && d.teabag_cooldown == 0 {
-				d.update_hp(+20)
-				//d.dx = 150 * (rand.Float64() - 0.5)
-
+				d.update_hp(+cfg.TeabagHeal)
 				delete(corpses, d.teabagee)
 				d.teabagee = nil
 			}
+		}
+
+		for e := range effects {
+			e.Tick(tick.Seconds())
+		}
+		effect_morgue := []*effect{} // avoid delete-during-iteration rug-pulls
+		for e := range effects {
+			if e.IsExpired() {
+				effect_morgue = append(effect_morgue, e)
+			}
+		}
+		for _, e := range effect_morgue {
+			delete(effects, e)
 		}
 
 		select {
@@ -701,6 +766,10 @@ func run_fight_club(messages chan map[string]string) {
 			for c := range corpses {
 				c.Draw(win)
 			}
+			for e := range effects {
+				e.Draw(win)
+			}
+
 			win.Update()
 			// DRAWING ENDS HERE
 		}
