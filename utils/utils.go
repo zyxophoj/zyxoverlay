@@ -7,14 +7,15 @@ import "strconv"
 import	"image/color"
 	
 // Color_from_RGBstring converts an ini file colour string (e.g. "R255g128b0") into a color.RGBA
-// the alpha part of RGBA just gets set to 0xff (full opacity) if omitted
+// The components can be in any order because I can never remember what the standard is.
+// The alpha part of RGBA just gets set to 0xFF (full opacity) if omitted
 // (r, g, and b get set to 0 if omitted, which means "g42" or even an empty string is technically a valid color string, but please don't do that)
 func Colour_from_RGBstring(str string) (color.RGBA, error) {
 	out := color.RGBA{0, 0, 0, 0xFF}
 
 	name := rune(0)
 	numstr := ""
-	for _, r := range str + "!" { // +"!" is an evil way to make sure the final colour index gets processed.
+	for _, r := range str + "!" { // "!" makes sure the final colour index gets processed.  Yee-Ha.
 		if unicode.IsDigit(r) {
 			numstr += string(r)
 		} else {

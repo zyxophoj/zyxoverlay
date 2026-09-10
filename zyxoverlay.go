@@ -94,7 +94,7 @@ func main() {
 		}
 	}()
 
-	cfg, _, _:=get_config()
+	cfg, _, _ := get_config()
 	go func() {
 		err := http.ListenAndServe(fmt.Sprintf(":%v", cfg.ParasitePort), nil)
 		if err != nil {
@@ -217,7 +217,7 @@ const (
 )
 
 // get_sprite gets a sprite
-// only the first call loads a file; subsequent calls use a cached
+// only the first call loads a file; subsequent calls use a cache
 // The type-safety here is a bit illusory since any int literal can be auto-converted to sprite.
 func get_sprite(name sprite) *pixel.Sprite {
 	filename := "images/" + map[sprite]string{
@@ -471,7 +471,7 @@ func make_effect(x float64, y float64, str string) *effect {
 	fmt.Fprintln(text_text, str)
 
 	// Batman words served to conceal some truly atrocious fight choreograpy.  Since we are absolutely confident
-	// in our fight choreograpy, we spawn above the fighters (y=DudeHeight) for clear visibility.
+	// in our totally awesome fight choreograpy, we spawn above the fighters (y=DudeHeight) for clear visibility.
 	// Randomness of velocity improves clarity a little bit when there is a gang-teabagging.
 	return &effect{str, text_text, pixel.V(-0.5*text_text.BoundsOf(str).W(), cfg.DudeHeight), 2, 0, x, y, rand.Float64()*60.0 - 30.0, rand.Float64()*40.0 + 30.0}
 }
