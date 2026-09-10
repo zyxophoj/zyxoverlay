@@ -150,7 +150,7 @@ func get_config() (*Config, *Colours, *text.Atlas) {
 	if FIGHT_CLUB_GLOBALS.atlas == nil {
 
 		FIGHT_CLUB_GLOBALS.cfg = Config{
-			ParasitePort:       80,
+			ParasitePort:       3000,
 			TextHeight:         13,
 			ArenaWidth:         1280,
 			ArenaHeight:        480,
