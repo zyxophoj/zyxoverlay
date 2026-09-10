@@ -7,11 +7,14 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"iter"
+	"maps"
 	"math"
 	"math/rand"
 	"net/http"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -316,6 +319,9 @@ func (p *platform) Draw(target pixel.Target) {
 	p.text.Draw(target, pixel.IM.Moved(p.text_offset.Add(top_left)))
 }
 
+// Needed for FCO
+func (p *platform) Tick(seconds float64) {}
+
 type dude struct {
 	name           string
 	name_text      *text.Text
@@ -496,12 +502,16 @@ func rand_from[K any](src []K) K {
 	return src[rand.Intn(len(src))]
 }
 
+func draw_things[F FCO, I iter.Seq[F]](i I, win *opengl.Window) {
+	for t := range i {
+		t.Draw(win)
+	}
+}
+
 // run_fight_club does something we don't talk about
 func run_fight_club(messages chan map[string]string) {
 	last_user := "sdfhjasldfhal"
 	last_message := "sjklfhasjkld2"
-	tea_words := []string{"YORKSHIRE", "SPIFF", "CHA", "EARL GREY, HOT", "ROSIE", "PG", "TETLEY"}
-	excitement := []string{"!", "!!", "!!!"}
 
 	cfg, colour, _ := get_config()
 	wcfg := opengl.WindowConfig{
@@ -529,223 +539,19 @@ func run_fight_club(messages chan map[string]string) {
 		new_time := time.Now()
 		tick := new_time.Sub(old_time)
 		old_time = new_time
+		
+		// We have to be a bit careful here - platform slices suffer identity-destroying append operations, which is why
+		// they are returned back out of platform_processing.  Nothing else modifies the platform slices; they are the world and
+		// the dudes (and other stuff) are just living in it.
+		// (everything else is in maps, which don't have that problem)
 
-		// Platforms time out after a while
-		if len(active_platforms) > 0 {
-			active_platforms[0].age += tick.Seconds()
-			if active_platforms[0].age > 60 {
-				active_platforms = active_platforms[1:]
-			}
-		}
-
-		// New platforms wake up pushing
-		if !pushing && len(queued_platforms) > 0 {
-			active_platforms = append(active_platforms, queued_platforms[0])
-			for len(active_platforms) > 5 {
-				active_platforms = active_platforms[1:]
-			}
-			queued_platforms = queued_platforms[1:]
-
-			push_height = 0.0
-			pushing = true
-		}
-
-		if pushing {
-			// To reduce backlog, long queues increase pushing speed
-			push_change := tick.Seconds() * cfg.PushSpeed * float64(1+len(queued_platforms))
-			push_height += push_change
-			if push_height > cfg.PushHeight {
-				push_change -= (push_height - cfg.PushHeight)
-				push_height = cfg.PushHeight
-				pushing = false
-			}
-
-			for _, p := range active_platforms {
-				p.Move(0, push_change)
-			}
-		}
-
-		// Fight!
-		// TODO: parachuting dudes can't fight or be fought
-		// TODO: dudes in cooldown can't fight
-
-		// To avoid rug-pulls, we'll record who should be removed from the game due to deadness here,
-		// and remove them after the fight loop.
-		morgue := []*dude{}
-
-		for _, d1 := range dudes {
-			for _, d2 := range dudes {
-				if d1 == d2 {
-					continue
-				}
-
-				// Must be close enough to fight
-				if math.Abs(d1.x-d2.x) > 7 || math.Abs(d1.y-d2.y) > 1 {
-					continue
-				}
-
-				// Rule 3:  If somebody dies, the fight is over (for them, at least)
-				if d1.hitpoints < 0 || d2.hitpoints < 0 {
-					continue
-				}
-
-				xdiff := d2.x - d1.x
-				dxdiff := d2.dx - d1.dx
-				if dxdiff*xdiff >= 0 {
-					//They are moving apart
-					continue
-				}
-
-				if d1.dx*d2.dx <= 0 {
-					//Moving towards each other
-					d1.dx, d2.dx = -0.9*d1.dx, -0.9*d2.dx
-					d1.dy += 20
-					d2.dy += 20
-					// update_hp last so that corpses properly inherit position and velocity
-					damage1, damage2 := math.Sqrt(d1.hitpoints), math.Sqrt(d2.hitpoints)
-					corpses[d1.update_hp(-damage2)] = true
-					corpses[d2.update_hp(-damage1)] = true
-
-					effects[make_effect((d1.x+d2.x)/2.0, (d1.y+d2.y)/2.0, batman_words.Get_word()+rand_from(excitement))] = true
-
-					fmt.Println(d1.name, "hits", d2.name, "down to", d2.hitpoints)
-					fmt.Println(d2.name, "hits", d1.name, "down to", d1.hitpoints)
-				} else {
-					//Backstab!
-					stabber, victim := d1, d2
-					if math.Abs(d2.dx) > math.Abs(d1.dx) {
-						stabber, victim = d2, d1
-					}
-
-					// There is an element of cartoon physics here, but there is also an important
-					// balance consideration.  Dudes get backstabbed when they are walking too slowly.
-					// We don't want a permanently-slow-moving (and therefore, -backstab-receiving)
-					// subclass of dude, so a backstabbee gets a generous "donation" of speed.
-					ddx := (stabber.dx - victim.dx)
-					victim.dx += 3.0 * ddx
-					victim.dy += math.Abs(ddx)
-					corpses[victim.update_hp(-2*math.Sqrt(stabber.hitpoints))] = true // Double damage!
-
-					effects[make_effect((d1.x+d2.x)/2.0, (d1.y+d2.y)/2.0, batman_words.Get_word()+rand_from(excitement))] = true
-
-					fmt.Println(stabber.name, "backstabs", victim.name, "down to", victim.hitpoints)
-				}
-
-				if d1.hitpoints < 0 {
-					morgue = append(morgue, d1)
-				}
-				if d2.hitpoints < 0 {
-					morgue = append(morgue, d2)
-				}
-			}
-		}
-		for _, d := range morgue {
-			delete(dudes, d.name)
-		}
-
-		for _, d := range dudes {
-			old_d_y := d.y
-			d.Tick(tick.Seconds())
-
-			// collision with ground
-			if d.y < 0 {
-				d.y = 0
-				d.dy = 0 // Todo: bounce?
-			}
-
-			// collision with platforms
-			for _, plat := range active_platforms {
-				if plat.rect.Min.X < d.x && d.x < plat.rect.Max.X &&
-					d.y < plat.rect.Max.Y+1 && old_d_y > plat.rect.Min.Y-1 {
-					if plat.rect.Max.Y-d.y < cfg.TextHeight/2 {
-						// dude pushed up by platform
-						d.dy = 0
-						d.y = plat.rect.Max.Y
-					} else {
-						// platform is too high to jump onto, so bounce off it.
-						// (realistically, only walls of text should do this)
-						// Bounce of very slightly faster than we hit the wall
-						// to ensure dudes don't get stuck inside.  Yee-ha.
-						d.dx *= -1.01
-					}
-				}
-			}
-		}
-
-		delete(corpses, nil)
-
-		for d := range corpses {
-			old_d_y := d.y
-			d.Tick(tick.Seconds())
-
-			// collision with ground
-			if d.y < 0 {
-				d.y = 0
-				if d.dy < 0 {
-					d.dy = -cfg.CorpseBounciness * d.dy
-				}
-			}
-
-			// collision with platforms
-			for _, plat := range active_platforms {
-				if plat.rect.Min.X < d.x && d.x < plat.rect.Max.X &&
-					d.y < plat.rect.Max.Y && old_d_y > plat.rect.Min.Y {
-					if d.dy < 0 {
-						d.dy = -0.4 * d.dy
-					} else {
-						d.dy = 0
-					}
-					d.y = plat.rect.Max.Y
-				}
-			}
-		}
-
-		// Dude-corpse interaction: Teabagging!
-		for c, _ := range corpses {
-			for _, d := range dudes {
-				if d.teabagee != nil {
-					// already teabagging
-					continue
-				}
-
-				//Close enough?
-				if math.Abs(d.x-c.x) > 7 || math.Abs(d.y-c.y) > 1 {
-					continue
-				}
-
-				d.teabag_cooldown = cfg.TeabagTime
-				d.teabagee = c
-				d.dx = 0
-				c.dx = 0
-				c.dy = 0
-
-				effects[make_effect(d.x, d.y, rand_from(tea_words)+rand_from(excitement))] = true
-
-				// Note: once teabagging starts, we let it finish even if the teabager gets launched into orbit.
-				// This is considered to be a feature, because it is funny.
-			}
-		}
-
-		for _, d := range dudes {
-			if d.teabagee != nil && d.teabag_cooldown == 0 {
-				d.update_hp(+cfg.TeabagHeal)
-				delete(corpses, d.teabagee)
-				d.teabagee = nil
-			}
-		}
-
-		for e := range effects {
-			e.Tick(tick.Seconds())
-		}
-		effect_morgue := []*effect{} // avoid delete-during-iteration rug-pulls
-		for e := range effects {
-			if e.IsExpired() {
-				effect_morgue = append(effect_morgue, e)
-			}
-		}
-		for _, e := range effect_morgue {
-			delete(effects, e)
-		}
+		// TODO: "this_and_that" functions are a thioacetone-class code smell; separate them.
+		active_platforms, queued_platforms = platform_processing(tick, active_platforms, queued_platforms, &pushing, &push_height)
+		dude_processing_and_platform_interactions(tick, dudes, active_platforms)
+		dude_on_dude_interactions(dudes, corpses, effects)
+		corpse_processing_and_platform_interactions(tick, corpses, active_platforms)
+		dude_on_corpse_interactions(dudes, corpses, effects)
+		effect_processing(tick, effects)
 
 		select {
 		case message := <-messages:
@@ -768,22 +574,252 @@ func run_fight_club(messages chan map[string]string) {
 			// DRAWING STARTS HERE
 			win.Clear(colour.Background)
 
-			for _, plat := range active_platforms {
-				plat.Draw(win)
-			}
-			for _, d := range dudes {
-				d.Draw(win)
-			}
-			for c := range corpses {
-				c.Draw(win)
-			}
-			for e := range effects {
-				e.Draw(win)
-			}
+			draw_things(slices.Values(active_platforms), win)
+			draw_things(maps.Values(dudes), win)
+			draw_things(maps.Keys(corpses), win)
+			draw_things(maps.Keys(effects), win)
 
 			win.Update()
 			// DRAWING ENDS HERE
 		}
 	}
 
+}
+
+func platform_processing(tick time.Duration, active_platforms []*platform, queued_platforms []*platform, pushing *bool, push_height *float64) ([]*platform, []*platform) {
+	cfg, _, _ := get_config()
+
+	// Platforms time out after a while
+	if len(active_platforms) > 0 {
+		active_platforms[0].age += tick.Seconds()
+		if active_platforms[0].age > 60 {
+			active_platforms = active_platforms[1:]
+		}
+	}
+
+	// New platforms wake up pushing
+	if !*pushing && len(queued_platforms) > 0 {
+		active_platforms = append(active_platforms, queued_platforms[0])
+		for len(active_platforms) > 5 {
+			active_platforms = active_platforms[1:]
+		}
+		queued_platforms = queued_platforms[1:]
+
+		*push_height = 0.0
+		*pushing = true
+	}
+
+	if *pushing {
+		// To reduce backlog, long queues increase pushing speed
+		push_change := tick.Seconds() * cfg.PushSpeed * float64(1+len(queued_platforms))
+		*push_height += push_change
+		if *push_height > cfg.PushHeight {
+			push_change -= (*push_height - cfg.PushHeight)
+			*push_height = cfg.PushHeight
+			*pushing = false
+		}
+
+		for _, p := range active_platforms {
+			p.Move(0, push_change)
+		}
+	}
+
+	return active_platforms, queued_platforms
+}
+
+func dude_processing_and_platform_interactions(tick time.Duration, dudes map[string]*dude, active_platforms []*platform) {
+	cfg, _, _ := get_config()
+	for _, d := range dudes {
+		old_d_y := d.y
+		d.Tick(tick.Seconds())
+
+		// collision with ground
+		if d.y < 0 {
+			d.y = 0
+			d.dy = 0 // Todo: bounce?
+		}
+
+		// collision with platforms
+		for _, plat := range active_platforms {
+			if plat.rect.Min.X < d.x && d.x < plat.rect.Max.X &&
+				d.y < plat.rect.Max.Y+1 && old_d_y > plat.rect.Min.Y-1 {
+				if plat.rect.Max.Y-d.y < cfg.TextHeight/2 {
+					// dude pushed up by platform
+					d.dy = 0
+					d.y = plat.rect.Max.Y
+				} else {
+					// platform is too high to jump onto, so bounce off it.
+					// (realistically, only walls of text should do this)
+					// Bounce of very slightly faster than we hit the wall
+					// to ensure dudes don't get stuck inside.  Yee-ha.
+					d.dx *= -1.01
+				}
+			}
+		}
+	}
+}
+
+func dude_on_dude_interactions(dudes map[string]*dude, corpses map[*corpse]bool, effects map[*effect]bool) {
+	excitement := []string{"!", "!!", "!!!"}
+
+	// TODO: parachuting dudes can't fight or be fought
+	// TODO: dudes in cooldown can't fight
+
+	// To avoid iteration rug-pulls, we'll add dead dudes to the morgue here
+	// and remove them from the game after the main loop.
+	morgue := []*dude{}
+
+	for _, d1 := range dudes {
+		for _, d2 := range dudes {
+			if d1 == d2 {
+				continue
+			}
+
+			// Must be close enough to fight
+			if math.Abs(d1.x-d2.x) > 7 || math.Abs(d1.y-d2.y) > 1 {
+				continue
+			}
+
+			// Rule 3:  If somebody dies, the fight is over (for them, at least)
+			if d1.hitpoints < 0 || d2.hitpoints < 0 {
+				continue
+			}
+
+			xdiff := d2.x - d1.x
+			dxdiff := d2.dx - d1.dx
+			if dxdiff*xdiff >= 0 {
+				//They are moving apart
+				continue
+			}
+
+			if d1.dx*d2.dx <= 0 {
+				//Moving towards each other
+				d1.dx, d2.dx = -0.9*d1.dx, -0.9*d2.dx
+				d1.dy += 20
+				d2.dy += 20
+				// update_hp last so that corpses properly inherit position and velocity
+				damage1, damage2 := math.Sqrt(d1.hitpoints), math.Sqrt(d2.hitpoints)
+				// for simplicity, we always add teh corpse (even if it's nil) and clean up the map at the end
+				corpses[d1.update_hp(-damage2)] = true
+				corpses[d2.update_hp(-damage1)] = true
+
+				effects[make_effect((d1.x+d2.x)/2.0, (d1.y+d2.y)/2.0, batman_words.Get_word()+rand_from(excitement))] = true
+
+				fmt.Println(d1.name, "hits", d2.name, "down to", d2.hitpoints)
+				fmt.Println(d2.name, "hits", d1.name, "down to", d1.hitpoints)
+			} else {
+				//Backstab!
+				stabber, victim := d1, d2
+				if math.Abs(d2.dx) > math.Abs(d1.dx) {
+					stabber, victim = d2, d1
+				}
+
+				// There is an element of cartoon physics here, but there is also an important
+				// balance consideration.  Dudes get backstabbed when they are walking too slowly.
+				// We don't want a permanently-slow-moving (and therefore, -backstab-receiving)
+				// subclass of dude, so a backstabbee gets a generous "donation" of speed.
+				ddx := (stabber.dx - victim.dx)
+				victim.dx += 3.0 * ddx
+				victim.dy += math.Abs(ddx)
+				corpses[victim.update_hp(-2*math.Sqrt(stabber.hitpoints))] = true // Double damage!
+
+				effects[make_effect((d1.x+d2.x)/2.0, (d1.y+d2.y)/2.0, batman_words.Get_word()+rand_from(excitement))] = true
+
+				fmt.Println(stabber.name, "backstabs", victim.name, "down to", victim.hitpoints)
+			}
+
+			if d1.hitpoints < 0 {
+				morgue = append(morgue, d1)
+			}
+			if d2.hitpoints < 0 {
+				morgue = append(morgue, d2)
+			}
+		}
+	}
+	for _, d := range morgue {
+		delete(dudes, d.name)
+	}
+
+	delete(corpses, nil)
+}
+
+func corpse_processing_and_platform_interactions(tick time.Duration, corpses map[*corpse]bool, platforms []*platform) {
+	cfg, _, _ := get_config()
+	for d := range corpses {
+		old_d_y := d.y
+		d.Tick(tick.Seconds())
+
+		// collision with ground
+		if d.y < 0 {
+			d.y = 0
+			if d.dy < 0 {
+				d.dy = -cfg.CorpseBounciness * d.dy
+			}
+		}
+
+		// collision with platforms
+		for _, plat := range platforms {
+			if plat.rect.Min.X < d.x && d.x < plat.rect.Max.X &&
+				d.y < plat.rect.Max.Y && old_d_y > plat.rect.Min.Y {
+				if d.dy < 0 {
+					d.dy = -0.4 * d.dy
+				} else {
+					d.dy = 0
+				}
+				d.y = plat.rect.Max.Y
+			}
+		}
+	}
+}
+
+func dude_on_corpse_interactions(dudes map[string]*dude, corpses map[*corpse]bool, effects map[*effect]bool) {
+	// There is one dude-corpse interaction: Teabagging!
+	tea_words := []string{"YORKSHIRE", "SPIFF", "CHA", "EARL GREY, HOT", "ROSIE", "PG", "TETLEY"}
+	excitement := []string{"!", "!!", "!!!"}
+	cfg, _, _ := get_config()
+
+	for _, d := range dudes {
+		if d.teabagee != nil && d.teabag_cooldown == 0 {
+			// teabagging complete
+			d.update_hp(+cfg.TeabagHeal)
+			delete(corpses, d.teabagee)
+			d.teabagee = nil
+		}
+		if d.teabagee != nil {
+			// still teabagging
+			continue
+		}
+		for c, _ := range corpses {
+			//Close enough?
+			if math.Abs(d.x-c.x) > 7 || math.Abs(d.y-c.y) > 1 {
+				continue
+			}
+
+			// begin teabagging!
+			d.teabag_cooldown = cfg.TeabagTime
+			d.teabagee = c
+			d.dx = 0
+			c.dx = 0
+			c.dy = 0
+
+			effects[make_effect(d.x, d.y, rand_from(tea_words)+rand_from(excitement))] = true
+
+			// Note: once teabagging starts, we let it finish even if the teabagger gets launched into orbit.
+			// This is considered to be a feature, because it is funny.
+		}
+	}
+}
+
+func effect_processing(tick time.Duration, effects map[*effect]bool) {
+	morgue := []*effect{} // avoid delete-during-iteration rug-pulls
+
+	for e := range effects {
+		e.Tick(tick.Seconds())
+		if e.IsExpired() {
+			morgue = append(morgue, e)
+		}
+	}
+	for _, e := range morgue {
+		delete(effects, e)
+	}
 }
