@@ -281,15 +281,17 @@ func make_platform(message string) *platform {
 	cfg, colours, atlas := get_config()
 
 	plat_text := text.New(pixel.V(0, 0), atlas)
+	plat_height := cfg.TextHeight + 2*1
 	width := plat_text.BoundsOf(message).W()
 	if width > cfg.ArenaWidth*0.6 {
 		message = "[WALL Of TEXT]"
 		width = plat_text.BoundsOf(message).W()
+		plat_height = cfg.PushHeight
 	}
 	plat_text.Color = colours.PlatformText
 	fmt.Fprintln(plat_text, message)
 	plat_width := width + 2*5
-	plat_height := cfg.TextHeight + 2*1
+
 	plat_sprite := solid_rect_sprite(pixel.Rect{pixel.V(0, 0), pixel.V(plat_width, plat_height)}, colours.Platform)
 
 	left := rand.Float64() * (cfg.ArenaWidth - plat_width)
@@ -297,8 +299,8 @@ func make_platform(message string) *platform {
 
 	return &platform{plat_sprite, plat_text,
 		pixel.R(left, -plat_height, left+plat_width, 0),
-		pixel.Vec{X: plat_width / 2, Y: plat_height / 2}, // sprites are drawn based on centre
-		pixel.Vec{X: 5, Y: 1 + 2},                        // but text is drawn based off top-left corner!!  And that "2" make no sense,
+		pixel.Vec{X: plat_width / 2, Y: plat_height / 2},             // sprites are drawn based on centre
+		pixel.Vec{X: 5, Y: 1 + 2 + plat_height/2 - cfg.TextHeight/2}, // but text is drawn based off top-left corner!!  And that "2" make no sense,
 		0,
 	}
 }
@@ -654,9 +656,18 @@ func run_fight_club(messages chan map[string]string) {
 			// collision with platforms
 			for _, plat := range active_platforms {
 				if plat.rect.Min.X < d.x && d.x < plat.rect.Max.X &&
-					d.y < plat.rect.Max.Y && old_d_y > plat.rect.Min.Y {
-					d.dy = 0
-					d.y = plat.rect.Max.Y
+					d.y < plat.rect.Max.Y+1 && old_d_y > plat.rect.Min.Y-1 {
+					if plat.rect.Max.Y-d.y < cfg.TextHeight/2 {
+						// dude pushed up by platform
+						d.dy = 0
+						d.y = plat.rect.Max.Y
+					} else {
+						// platform is too high to jump onto, so bounce off it.
+						// (realistically, only walls of text should do this)
+						// Bounce of very slightly faster than we hit the wall
+						// to ensure dudes don't get stuck inside.  Yee-ha.
+						d.dx *= -1.01
+					}
 				}
 			}
 		}
