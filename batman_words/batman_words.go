@@ -58,7 +58,7 @@ var word_lookup []string
 func init(){
 	for word, count:=range word_map{
 		for range(count){
-			// Strings are shallow-copied, so this isn't (quite) as fumb as it looks
+			// Strings are shallow-copied, so this isn't (quite) as dumb as it looks
 			word_lookup=append(word_lookup, word)
 		}
 	}
