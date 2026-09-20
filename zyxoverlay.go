@@ -262,6 +262,8 @@ func solid_rect_sprite(rect pixel.Rect, colour color.RGBA) *pixel.Sprite {
 	return pixel.NewSprite(pd, pd.Bounds())
 }
 
+// FCO = Fight Club Object
+// i.e. anything (except the bakground) that needs to be drawn onto the window
 type FCO interface {
 	Tick(seconds float64)
 	Draw(target pixel.Target)
@@ -329,6 +331,7 @@ type dude struct {
 	width, height  int
 	x, y           float64 //bottom centre
 	dx, dy         float64
+	old_x, old_y   float64
 
 	name_offset pixel.Vec
 
@@ -354,10 +357,11 @@ func make_dude(name string) *dude {
 	hp_text.Color = colour.HitpointsText
 	fmt.Fprintln(hp_text, "99")
 
+	x, y := float64(dude_width)/2.0+rand.Float64()*(cfg.ArenaWidth-float64(dude_width)), cfg.ArenaHeight
+
 	return &dude{name, dude_text, hp_text,
 		dude_width, 50,
-		float64(dude_width)/2.0 + rand.Float64()*(cfg.ArenaWidth-float64(dude_width)), cfg.ArenaHeight,
-		0, 0,
+		x, y, 0, 0, x, y,
 		pixel.V(-0.5*dude_text.BoundsOf(name).W(), 50),
 		99, 0, 0, nil,
 	}
@@ -366,19 +370,27 @@ func make_dude(name string) *dude {
 func (d *dude) Tick(seconds float64) {
 	cfg, _, _ := get_config()
 
+	d.old_x, d.old_y = d.x, d.y
+
 	d.dy += cfg.Gravity * seconds
+	d.x += d.dx * seconds
+	d.y += d.dy * seconds
+
+	// Collision with arena sides
 	if (d.x < 0 && d.dx < 0) || (d.x > cfg.ArenaWidth && d.dx > 0) {
 		d.dx = -0.9 * d.dx
 	}
 
-	d.x += d.dx * seconds
-	d.y += d.dy * seconds
+	// Collision with ground
+	if d.y < 0 {
+		d.y = 0
+		d.dy = 0 // Todo: bounce?
+	}
 
 	d.teabag_cooldown -= seconds
 	if d.teabag_cooldown < 0 {
 		d.teabag_cooldown = 0
 	}
-
 	if d.dx == 0 && d.teabag_cooldown == 0 {
 		d.dx = (cfg.MinWalkSpeed + (rand.Float64() * (cfg.MaxWalkSpeed - cfg.MinWalkSpeed))) * float64(rand.Intn(2)*2-1)
 	}
@@ -398,6 +410,10 @@ func (d *dude) Draw(target pixel.Target) {
 	sprite.Draw(target, pixel.IM.Moved(position.Add(pixel.V(0, height/2))))
 	d.hitpoints_text.Draw(target, pixel.IM.Moved(position.Add(pixel.V(
 		-0.5*d.hitpoints_text.BoundsOf(strconv.Itoa(int(d.hitpoints))).W(), height-15))))
+}
+
+func (d *dude) OldPos() (float64, float64) {
+	return d.old_x, d.old_y
 }
 
 // update_hp increases a dude's HP by the specified amount (which can be negative)
@@ -421,8 +437,9 @@ type corpse struct {
 	name_text   *text.Text
 	name_offset pixel.Vec
 
-	x, y   float64 //bottom centre
-	dx, dy float64
+	x, y         float64 //bottom centre
+	dx, dy       float64
+	old_x, old_y float64
 }
 
 func make_corpse(name string, x float64, y float64, dx float64, dy float64) *corpse {
@@ -432,7 +449,7 @@ func make_corpse(name string, x float64, y float64, dx float64, dy float64) *cor
 	name_text.Color = colour.NameText
 	fmt.Fprintln(name_text, name)
 
-	return &corpse{name, name_text, pixel.V(-0.5*name_text.BoundsOf(name).W(), 30), x, y, dx, dy}
+	return &corpse{name, name_text, pixel.V(-0.5*name_text.BoundsOf(name).W(), 30), x, y, dx, dy, x, y}
 }
 
 func (c *corpse) Draw(target pixel.Target) {
@@ -445,18 +462,31 @@ func (c *corpse) Draw(target pixel.Target) {
 func (c *corpse) Tick(seconds float64) {
 	cfg, _, _ := get_config()
 
+	c.old_x, c.old_y = c.x, c.y
 	c.dy += cfg.Gravity * seconds
 
 	c.x += c.dx * seconds
 	c.y += c.dy * seconds
 
+	// bounce (not quite elastically) of arena edges
 	if (c.x < 0 && c.dx < 0) || (c.x > cfg.ArenaWidth && c.dx > 0) {
 		c.dx = -0.9 * c.dx
 	}
+	// ...or off the ground
+	if c.y < 0 {
+		c.y = 0
+		if c.dy < 0 {
+			c.dy = -cfg.CorpseBounciness * c.dy
+		}
+	}
 
 	// Corpses can not walk, so there is drag.
-	// TODO: this should really only apply when the corpse is on a platform or on the ground
+	// TODO: this should really only apply when the corpse is sliding on a platform or on the ground
 	c.dx *= math.Exp(-seconds * 0.5)
+}
+
+func (c *corpse) OldPos() (float64, float64) {
+	return c.old_x, c.old_y
 }
 
 type effect struct {
@@ -510,8 +540,8 @@ func draw_things[F FCO, I iter.Seq[F]](i I, win *opengl.Window) {
 
 // run_fight_club does something we don't talk about
 func run_fight_club(messages chan map[string]string) {
-	last_user := "sdfhjasldfhal"
-	last_message := "sjklfhasjkld2"
+	last_user := "simp_incel_virgin69"                                     // Known banned words on Twitch, so unlikely to be a live username
+	last_message := "Twitch's censorship decisions are entirely rational." // Similarly implausible message
 
 	cfg, colour, _ := get_config()
 	wcfg := opengl.WindowConfig{
@@ -539,19 +569,25 @@ func run_fight_club(messages chan map[string]string) {
 		new_time := time.Now()
 		tick := new_time.Sub(old_time)
 		old_time = new_time
-		
+
 		// We have to be a bit careful here - platform slices suffer identity-destroying append operations, which is why
 		// they are returned back out of platform_processing.  Nothing else modifies the platform slices; they are the world and
 		// the dudes (and other stuff) are just living in it.
 		// (everything else is in maps, which don't have that problem)
 
-		// TODO: "this_and_that" functions are a thioacetone-class code smell; separate them.
 		active_platforms, queued_platforms = platform_processing(tick, active_platforms, queued_platforms, &pushing, &push_height)
-		dude_processing_and_platform_interactions(tick, dudes, active_platforms)
-		dude_on_dude_interactions(dudes, corpses, effects)
-		corpse_processing_and_platform_interactions(tick, corpses, active_platforms)
-		dude_on_corpse_interactions(dudes, corpses, effects)
+		dude_processing(tick, dudes)
+		corpse_processing(tick, corpses)
 		effect_processing(tick, effects)
+
+		// Order matters, sometimes.
+		// In particular, dude_on_corpse happens *before* dude_on_dude to prevent automatic teabagging of a kill;
+		// having movement after corpses are created but before they can be teabagged allows the teabagger to turn around and walk away
+		// (or the corpse to be hurled away in the case of a fatal backstab)
+		dude_on_platform_interactions(dudes, active_platforms)
+		dude_on_corpse_interactions(dudes, corpses, effects)
+		dude_on_dude_interactions(dudes, corpses, effects)
+		corpse_on_platform_interactions(corpses, active_platforms)
 
 		select {
 		case message := <-messages:
@@ -571,7 +607,7 @@ func run_fight_club(messages chan map[string]string) {
 
 		default:
 
-			// DRAWING STARTS HERE
+			// This section - between the win.Clear and the win.Update - must be the only place where drawing happens.
 			win.Clear(colour.Background)
 
 			draw_things(slices.Values(active_platforms), win)
@@ -580,7 +616,6 @@ func run_fight_club(messages chan map[string]string) {
 			draw_things(maps.Keys(effects), win)
 
 			win.Update()
-			// DRAWING ENDS HERE
 		}
 	}
 
@@ -627,22 +662,20 @@ func platform_processing(tick time.Duration, active_platforms []*platform, queue
 	return active_platforms, queued_platforms
 }
 
-func dude_processing_and_platform_interactions(tick time.Duration, dudes map[string]*dude, active_platforms []*platform) {
+func dude_processing(tick time.Duration, dudes map[string]*dude) {
+	for _, d := range dudes {
+		d.Tick(tick.Seconds())
+	}
+}
+
+func dude_on_platform_interactions(dudes map[string]*dude, platforms []*platform) {
 	cfg, _, _ := get_config()
 	for _, d := range dudes {
-		old_d_y := d.y
-		d.Tick(tick.Seconds())
+		_, old_y := d.OldPos()
 
-		// collision with ground
-		if d.y < 0 {
-			d.y = 0
-			d.dy = 0 // Todo: bounce?
-		}
-
-		// collision with platforms
-		for _, plat := range active_platforms {
+		for _, plat := range platforms {
 			if plat.rect.Min.X < d.x && d.x < plat.rect.Max.X &&
-				d.y < plat.rect.Max.Y+1 && old_d_y > plat.rect.Min.Y-1 {
+				d.y < plat.rect.Max.Y+1 && old_y > plat.rect.Min.Y-1 {
 				if plat.rect.Max.Y-d.y < cfg.TextHeight/2 {
 					// dude pushed up by platform
 					d.dy = 0
@@ -699,7 +732,7 @@ func dude_on_dude_interactions(dudes map[string]*dude, corpses map[*corpse]bool,
 				d2.dy += 20
 				// update_hp last so that corpses properly inherit position and velocity
 				damage1, damage2 := math.Sqrt(d1.hitpoints), math.Sqrt(d2.hitpoints)
-				// for simplicity, we always add teh corpse (even if it's nil) and clean up the map at the end
+				// for simplicity, we always add the corpse (even if it's nil) and clean up the map at the end
 				corpses[d1.update_hp(-damage2)] = true
 				corpses[d2.update_hp(-damage1)] = true
 
@@ -736,37 +769,34 @@ func dude_on_dude_interactions(dudes map[string]*dude, corpses map[*corpse]bool,
 			}
 		}
 	}
+
 	for _, d := range morgue {
 		delete(dudes, d.name)
 	}
-
 	delete(corpses, nil)
 }
 
-func corpse_processing_and_platform_interactions(tick time.Duration, corpses map[*corpse]bool, platforms []*platform) {
-	cfg, _, _ := get_config()
+func corpse_processing(tick time.Duration, corpses map[*corpse]bool) {
 	for d := range corpses {
-		old_d_y := d.y
 		d.Tick(tick.Seconds())
+	}
+}
 
-		// collision with ground
-		if d.y < 0 {
-			d.y = 0
-			if d.dy < 0 {
-				d.dy = -cfg.CorpseBounciness * d.dy
-			}
-		}
+func corpse_on_platform_interactions(corpses map[*corpse]bool, platforms []*platform) {
+	cfg, _, _ := get_config()
+	for c := range corpses {
+		_, old_y := c.OldPos()
 
 		// collision with platforms
 		for _, plat := range platforms {
-			if plat.rect.Min.X < d.x && d.x < plat.rect.Max.X &&
-				d.y < plat.rect.Max.Y && old_d_y > plat.rect.Min.Y {
-				if d.dy < 0 {
-					d.dy = -0.4 * d.dy
+			if plat.rect.Min.X < c.x && c.x < plat.rect.Max.X &&
+				c.y < plat.rect.Max.Y && old_y > plat.rect.Min.Y {
+				if c.dy < 0 {
+					c.dy = -cfg.CorpseBounciness * c.dy
 				} else {
-					d.dy = 0
+					c.dy = 0
 				}
-				d.y = plat.rect.Max.Y
+				c.y = plat.rect.Max.Y
 			}
 		}
 	}
