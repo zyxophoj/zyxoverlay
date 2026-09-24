@@ -1,22 +1,21 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"golang.org/x/net/html"
 	"image"
 	"image/color"
-	"io"
+
 	"iter"
 	"maps"
 	"math"
 	"math/rand"
-	"net/http"
+
 	"os"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+
 	"time"
 
 	_ "image/png"
@@ -29,82 +28,35 @@ import (
 	"github.com/gopxl/pixel/v2/ext/text"
 
 	"zyxoverlay/batman_words"
+	"zyxoverlay/twitch"
 	"zyxoverlay/utils"
 )
 
 func main() {
-	raw_messages := make(chan []byte)
+	messages := make(chan map[string]string)
+	cfg, _, _ := get_config()
 
-	http.HandleFunc("/zyxoverlay", func(w http.ResponseWriter, req *http.Request) {
-		switch req.Method {
-		case "POST":
-			body, err := io.ReadAll(req.Body)
+	switch strings.ToUpper(cfg.Mode) {
+	case "PARASITE":
+		go func() {
+			err := twitch.Run_from_browser_parasite(messages, cfg.ParasitePort)
 			if err != nil {
 				fmt.Println(err)
-				w.WriteHeader(400)
-				return
+				os.Exit(-1)
 			}
+		}()
 
-			defer req.Body.Close()
-
-			raw_messages <- body
-			fallthrough
-		case "OPTIONS":
-			w.Header()["Access-Control-Allow-Origin"] = []string{"https://www.twitch.tv"}
-			//fmt.Println("Responding to", req.Method,"with",200)
-			w.WriteHeader(200)
-
-		default:
-			// Whatever this is, we don't do it
-			w.WriteHeader(405)
-		}
-	})
-
-	messages := make(chan map[string]string)
-
-	// Receive twitch chat updates from browser parasite,
-	// extract username and message.
-	go func() {
-		// You know the rules, and so do I
-		rules := map[string]string{
-			"message-username":  "username",
-			"chat-message-text": "message-text",
-		}
-		for raw := range raw_messages {
-			parsed := map[string]string{}
-			json.Unmarshal(raw, &parsed)
-
-			doc, _ := html.Parse(strings.NewReader(parsed["dump"]))
-
-			out := map[string]string{}
-			crawl := func(node *html.Node) {}
-			crawl = func(node *html.Node) {
-				for _, att := range node.Attr {
-					for k, v := range rules {
-						if att.Val == k {
-							out[v] = node.FirstChild.Data
-						}
-					}
-				}
-
-				for child := node.FirstChild; child != nil; child = child.NextSibling {
-					crawl(child)
-				}
-			}
-			crawl(doc)
-
-			messages <- out
-		}
-	}()
-
-	cfg, _, _ := get_config()
-	go func() {
-		err := http.ListenAndServe(fmt.Sprintf(":%v", cfg.ParasitePort), nil)
+	case "IRC":
+		irc := twitch.IRC{}
+		err := irc.Run(messages, cfg.ChannelName)
 		if err != nil {
-			fmt.Println(err)
-			os.Exit(-1)
+			return
 		}
-	}()
+		defer irc.KillAndWait()
+
+	default:
+		fmt.Println("Unrecognised mode!  This should be PARASITE or IRC")
+	}
 
 	// opengl demands the main thread
 	opengl.Run(func() { run_fight_club(messages) })
@@ -112,7 +64,9 @@ func main() {
 
 // Fight club stuff starts here
 type Config struct {
+	Mode               string
 	ParasitePort       int
+	ChannelName        string
 	TextHeight         float64
 	ArenaWidth         float64
 	ArenaHeight        float64
@@ -154,6 +108,7 @@ func get_config() (*Config, *Colours, *text.Atlas) {
 
 		FIGHT_CLUB_GLOBALS.cfg = Config{
 			ParasitePort:       3000,
+			ChannelName:        "",
 			TextHeight:         13,
 			ArenaWidth:         1280,
 			ArenaHeight:        480,
