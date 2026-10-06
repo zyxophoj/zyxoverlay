@@ -91,8 +91,8 @@ func Run_from_browser_parasite(messages chan map[string]string, parasite_port in
 // IRC is used for receiving messages from Twitch's IRC interface
 // There is no constructor-type function; just default-conbstruct an IRC and call Run
 type IRC struct {
-	kill chan bool
-	dead chan bool
+	kill chan bool // Used to kill listening goros
+	dead chan bool // Used to wait for them to die
 }
 
 // Run connects to IRC and writes properly-formed messages to the "messages" channel
@@ -107,8 +107,7 @@ func (i *IRC) Run(messages chan map[string]string, channel_name string) error {
 	}
 	const (
 		server = "irc.chat.twitch.tv:6697"
-		// 6697 is TLS; 6667 is plain
-		// As of August 2025, plain is no longer an option:
+		// 6697 is TLS; 6667 is plain, but as of August 2025, plain is no longer an option:
 		// https://discuss.dev.twitch.com/t/decommission-of-non-secure-websocket-connections-to-twitch-irc-servers/64142
 	)
 
@@ -118,9 +117,7 @@ func (i *IRC) Run(messages chan map[string]string, channel_name string) error {
 	go func() {
 		for {
 			fmt.Println("Connecting...")
-			// Nicks starting with "justinfan" are magic - Twitch allows them to log in with "oauth:anonymous".
-			// They can not write to chat when they do this, but we only need to read. (at the current state of development, anyway)
-			err := i.connectAndRead(server, fmt.Sprintf("justinfan%d", rand.Intn(1<<20)), channel_name, messages)
+			err := i.connectAndRead(server, channel_name, messages)
 			select {
 			case <-i.kill:
 				fmt.Println("Killed by caller; Run returning")
@@ -129,7 +126,7 @@ func (i *IRC) Run(messages chan map[string]string, channel_name string) error {
 			default:
 			}
 
-			// If we're shouldn't be dead then try to recover
+			// If we shouldn't be dead then try to recover
 			fmt.Println("IRC disconnected: %v — reconnecting in 5s", err)
 			time.Sleep(5 * time.Second)
 		}
@@ -145,7 +142,7 @@ func (i *IRC) KillAndWait() {
 	<-i.dead
 }
 
-func (i *IRC) connectAndRead(server, nick, channel string, messages chan<- map[string]string) error {
+func (i *IRC) connectAndRead(server, channel string, messages chan<- map[string]string) error {
 	// TLS connection (preferred)
 	conn, err := tls.Dial("tcp", server, &tls.Config{})
 	if err != nil {
@@ -164,6 +161,9 @@ func (i *IRC) connectAndRead(server, nick, channel string, messages chan<- map[s
 		return w.Flush()
 	}
 
+	// Nicks starting with "justinfan" are special - Twitch allows them to log in with "oauth:anonymous".
+	// They can not write to chat when they do this, but we only need to read. (at the current state of development, anyway)
+	nick := fmt.Sprintf("justinfan%d", rand.Intn(1<<20))
 	for _, magic := range []string{
 		"CAP REQ :twitch.tv/tags twitch.tv/commands",
 		"PASS oauth:anonymous",
@@ -182,14 +182,22 @@ func (i *IRC) connectAndRead(server, nick, channel string, messages chan<- map[s
 		for {
 			line, err := r.ReadString('\n')
 			if err != nil {
-				fmt.Println("READ ERROR", err)
+				select {
+				case <-i.kill:
+					// "Told to quit by caller, so we did" is not an error
+				default:
+					fmt.Println("READ ERROR", err)
+				}
+				fmt.Println("Read loop exiting")
 				return
 			}
+
 			raw_messages <- line
 		}
 	}()
 
 	for {
+	out_of_select:
 		select {
 		case <-i.kill:
 			// The attempt to leave should be made, since it's rude to not clean up the mess we

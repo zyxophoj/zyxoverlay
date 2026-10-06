@@ -547,21 +547,19 @@ func run_fight_club(messages chan map[string]string) {
 		select {
 		case message := <-messages:
 			name := message["username"]
-			if name == "" || (name == last_user && message["message-text"] == last_message) {
+			text :=  message["message-text"]
+			if name == "" || (name == last_user && text == last_message) {
 				continue
 			}
 			last_user = name
-			last_message = message["message-text"]
-
-			text := name + ": " + message["message-text"]
-			queued_platforms = append(queued_platforms, make_platform(text))
+			last_message = text
+			queued_platforms = append(queued_platforms, make_platform(name + ": " + text))
 
 			if dudes[name] == nil {
 				dudes[name] = make_dude(name)
 			}
 
 		default:
-
 			// This section - between the win.Clear and the win.Update - must be the only place where drawing happens.
 			win.Clear(colour.Background)
 
