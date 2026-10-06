@@ -201,76 +201,75 @@ func (i *IRC) connectAndRead(server, nick, channel string, messages chan<- map[s
 			return nil
 
 		case line := <-raw_messages:
+			// From https://ircv3.net/specs/extensions/message-tags :
+			//
+			// <message>       ::= ['@' <tags> <SPACE>] [':' <prefix> <SPACE> ] <command> [params] <crlf>
+			//
+			// space can't appear in the tags, prefix or command.
+			// params must start with a space (although it's probably better to think of that space being a seperator)
 			line = strings.TrimRight(line, "\r\n")
-			fmt.Println("MESSAGE: [", line, "]")
+			tpc := [3]string{}
+			frags := strings.Split(line, " ")
+			for i, magic := range []string{"@", ":", ""} {
+				if len(frags) == 0 {
+					fmt.Println("Ignoring invalid message:", line)
+					break out_of_select
+				}
+				if strings.HasPrefix(frags[0], magic) {
+					tpc[i], frags = frags[0], frags[1:]
+				}
+			}
+			tags, prefix, command := tpc[0], tpc[1], tpc[2]
 
-			// Keepalive
-			if strings.HasPrefix(line, "PING ") {
-				pong := "PONG " + strings.TrimPrefix(line, "PING ")
-				if err := send(pong); err != nil {
+			switch command {
+			case "PING":
+				// Keepalive - we must PONG back with the exact same parameters.
+				if err := send("PONG " + strings.Join(frags, " ")); err != nil {
 					return err
 				}
-				continue
-			}
 
-			// PRIVMSG example (with tags):
-			// @badge-info=...;display-name=SomeUser;... :someuser!someuser@someuser.tmi.twitch.tv PRIVMSG #channel :hello world
-			if !strings.Contains(line, " PRIVMSG #") {
-				continue
-			}
+			case "PRIVMSG":
+				// The main event
+				username := ""
+				// Username from tags?
+				for _, tag := range strings.Split(tags, ";") {
+					if strings.HasPrefix(tag, "display-name=") {
+						username = tag[len("display-name="):]
+						break
+					}
+				}
+				if username == "" {
+					// OK, try user inside prefix then?  From RFC 1459:
+					// <prefix>   ::= <servername> | <nick> [ '!' <user> ] [ '@' <host> ]
+					bangR := strings.Index(prefix, "!") + 1
+					ampL := strings.Index(prefix[bangR:], "@")
+					if ampL < 0 {
+						break
+					}
+					username = prefix[bangR : bangR+ampL]
+				}
+				params := []string{}
+				for i, frag := range frags {
+					if strings.HasPrefix(frag, ":") {
+						// ":" indicates that everything else - which may contain unescaped spaces and colons - is a single param.
+						params = append(params, strings.Join(frags[i:], " ")[1:])
+						break
+					}
+					params = append(params, frags[i]) // TODO: unescape?
+				}
+				if len(params) == 0 {
+					// That shouldn't happen
+					break
+				}
 
-			username, text := parsePrivmsg(line)
-			if username == "" || text == "" {
-				continue
-			}
+				messages <- map[string]string{
+					"username":     username,
+					"message-text": params[len(params)-1], // params before the last are recipients
+				}
 
-			messages <- map[string]string{
-				"username":     username,
-				"message-text": text,
-			}
-		}
-	}
-}
-
-// Very small parser that extracts display-name (or login) and the message text.
-func parsePrivmsg(line string) (username, text string) {
-	// Split tags from the rest
-	var tagsPart, rest string
-	if strings.HasPrefix(line, "@") {
-		idx := strings.Index(line, " ")
-		if idx == -1 {
-			return "", ""
-		}
-		tagsPart = line[1:idx]
-		rest = line[idx+1:]
-	} else {
-		rest = line
-	}
-
-	// Prefer display-name from tags
-	for _, tag := range strings.Split(tagsPart, ";") {
-		if strings.HasPrefix(tag, "display-name=") {
-			username = tag[len("display-name="):]
-			break
-		}
-	}
-
-	// Fallback: extract login from the prefix (:user!user@...)
-	if username == "" {
-		if strings.HasPrefix(rest, ":") {
-			bang := strings.Index(rest, "!")
-			if bang > 1 {
-				username = rest[1:bang]
+			default:
+				fmt.Println("Ignoring", command, "Message")
 			}
 		}
 	}
-
-	// Message text is everything after the second " :"
-	msgIdx := strings.Index(rest, " :")
-	if msgIdx == -1 {
-		return "", ""
-	}
-	text = rest[msgIdx+2:]
-
-	return username, text
 }
