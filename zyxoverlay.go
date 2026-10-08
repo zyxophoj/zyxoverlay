@@ -1,21 +1,21 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
-
+	"io"
 	"iter"
 	"maps"
 	"math"
 	"math/rand"
-
 	"os"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
-
 	"time"
 
 	_ "image/png"
@@ -27,6 +27,12 @@ import (
 	"github.com/gopxl/pixel/v2/backends/opengl"
 	"github.com/gopxl/pixel/v2/ext/text"
 
+	ffmpeg "github.com/u2takey/ffmpeg-go"
+	/*
+		"github.com/gopxl/beep/v2"
+		"github.com/gopxl/beep/v2/speaker"
+		"github.com/gopxl/beep/v2/wav"
+	*/
 	"zyxoverlay/batman_words"
 	"zyxoverlay/twitch"
 	"zyxoverlay/utils"
@@ -483,6 +489,137 @@ func (e *effect) IsExpired() bool {
 	return e.age > e.duration
 }
 
+type video struct {
+	rect pixel.Rect
+
+	vid_reader      io.Reader
+	finished        chan error
+	frame_time      float64
+	time_since_last float64
+	video_buffer    []byte
+
+	is_expired bool
+}
+
+type streamInfo struct {
+	Streams []struct {
+		CodecType    string `json:"codec_type"`
+		Width        int    `json:"width"`
+		Height       int    `json:"height"`
+		AvgFrameRate string `json:"avg_frame_rate"`
+	} `json:"streams"`
+	Format struct {
+		Duration string `json:"duration"`
+	} `json:"format"`
+}
+
+func make_video(filename string) (*video, error) {
+	full_path := filename
+	out, err := ffmpeg.Probe(full_path)
+	if err != nil {
+		return nil, err
+	}
+	var info streamInfo
+	err = json.Unmarshal([]byte(out), &info)
+	if err != nil {
+		return nil, err
+	}
+
+	videocount := 0
+	w, h := 0, 0
+	frame_time := 0.0
+	for _, s := range info.Streams {
+		if s.CodecType == "video" {
+			videocount += 1
+			w, h = s.Width, s.Height
+
+			var num, den float64
+			_, err := fmt.Sscanf(s.AvgFrameRate, "%f/%f", &num, &den)
+			if err != nil {
+				// TODO: wrap
+				return nil, err
+			}
+			if num*den == 0 {
+				// this really should not happen
+				return nil, errors.New("ffprobe returned bogus frame rate")
+			}
+			frame_time = den / num
+		}
+	}
+	if videocount != 1 {
+		// How do you expect me to play that?
+		return nil, fmt.Errorf("File %s contains %s (which is not 1) video streams", filename, videocount)
+	}
+	// "f" versions of variables because pixel is float-based, but keep the originals since we absolutely do not want
+	// to make an array of fw*fh*4 bytes.
+	fw, fh := float64(w), float64(h)
+
+	cfg, _, _ := get_config()
+	if float64(w) > cfg.ArenaWidth || float64(h) > cfg.ArenaHeight {
+		return nil, errors.New("Video won't fit in the window")
+	}
+
+	x, y := rand.Intn(int(cfg.ArenaWidth)-w), rand.Intn(int(cfg.ArenaHeight)-h)
+	fx, fy := float64(x), float64(y)
+
+	frames_r, frames_w := io.Pipe()
+	finished := make(chan error)
+	go func() {
+		finished <- ffmpeg.Input(full_path).Output("pipe:", ffmpeg.KwArgs{
+			"format":  "rawvideo",
+			"pix_fmt": "rgba",
+			"s":       fmt.Sprintf("%dx%d", w, h),
+		}).
+			WithOutput(frames_w).
+			Silent(true).
+			Run()
+		frames_w.Close()
+	}()
+
+	return &video{pixel.R(fx, fy, fx+fw, fy+fh), frames_r, finished, frame_time, 0, make([]byte, w*h*4), false}, nil
+}
+
+func (v *video) Tick(seconds float64) {
+	if v.is_expired {
+		return
+	}
+
+	v.time_since_last += seconds
+	if v.time_since_last > 0 {
+		select {
+		case err := <-v.finished:
+			if err != nil && err != io.EOF {
+				fmt.Printf("decoder error: %v", err)
+			}
+			v.is_expired = true
+			return
+		default:
+		}
+
+		_, err := io.ReadFull(v.vid_reader, v.video_buffer)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			fmt.Println("Video error:", err)
+			v.is_expired = true
+		}
+
+		v.time_since_last -= v.frame_time
+	}
+}
+
+func (v *video) Draw(target pixel.Target) {
+	pic := pixel.PictureDataFromImage(&image.RGBA{
+		Pix:    v.video_buffer,
+		Stride: int(v.rect.W()) * 4,
+		Rect:   image.Rect(0, 0, int(v.rect.W()), int(v.rect.H())), // image.Rect is not pixel.Rect.  TODO: preserve int bounds; int-to-float-to-int is smelly
+	}) // This handles pixel's upside-down coordinates
+
+	pixel.NewSprite(pic, pic.Bounds()).Draw(target, pixel.IM.Moved(v.rect.Center()))
+}
+
+func (v *video) IsExpired() bool {
+	return v.is_expired
+}
+
 func rand_from[K any](src []K) K {
 	return src[rand.Intn(len(src))]
 }
@@ -497,6 +634,26 @@ func draw_things[F FCO, I iter.Seq[F]](i I, win *opengl.Window) {
 func run_fight_club(messages chan map[string]string) {
 	last_user := "simp_incel_virgin69"                                     // Known banned words on Twitch, so unlikely to be a live username
 	last_message := "Twitch's censorship decisions are entirely rational." // Similarly implausible message
+
+	video_names, err := func() (map[string]string, error) {
+		dir, err := os.Open("videos")
+		if err != nil {
+			return nil, err
+		}
+		filenames, err := dir.Readdirnames(0)
+		if err != nil {
+			return nil, err
+		}
+		names := map[string]string{}
+		for _, name := range filenames {
+			names[strings.Split(name, ".")[0]] = "videos/" + name
+		}
+		return names, nil
+	}()
+	if err != nil {
+		// not fatal, but videos won't work
+		fmt.Println("Error reading videos dir:", err)
+	}
 
 	cfg, colour, _ := get_config()
 	wcfg := opengl.WindowConfig{
@@ -515,6 +672,7 @@ func run_fight_club(messages chan map[string]string) {
 	dudes := map[string]*dude{}
 	corpses := map[*corpse]bool{}
 	effects := map[*effect]bool{}
+	videos := map[*video]bool{}
 
 	pushing := false
 	push_height := 0.0
@@ -534,6 +692,7 @@ func run_fight_club(messages chan map[string]string) {
 		dude_processing(tick, dudes)
 		corpse_processing(tick, corpses)
 		effect_processing(tick, effects)
+		video_processing(tick, videos)
 
 		// Order matters, sometimes.
 		// In particular, dude_on_corpse happens *before* dude_on_dude to prevent automatic teabagging of a kill;
@@ -547,13 +706,27 @@ func run_fight_club(messages chan map[string]string) {
 		select {
 		case message := <-messages:
 			name := message["username"]
-			text :=  message["message-text"]
+			text := message["message-text"]
 			if name == "" || (name == last_user && text == last_message) {
 				continue
 			}
 			last_user = name
 			last_message = text
-			queued_platforms = append(queued_platforms, make_platform(name + ": " + text))
+
+			if strings.HasPrefix(text, "!") {
+				command := text[1:]
+				filename, ok := video_names[command]
+				if ok {
+					v, err := make_video(filename)
+					if err != nil {
+						fmt.Println("Error loading video:", err)
+					} else {
+						videos[v] = true
+					}
+				}
+			} else {
+				queued_platforms = append(queued_platforms, make_platform(name+": "+text))
+			}
 
 			if dudes[name] == nil {
 				dudes[name] = make_dude(name)
@@ -567,6 +740,7 @@ func run_fight_club(messages chan map[string]string) {
 			draw_things(maps.Values(dudes), win)
 			draw_things(maps.Keys(corpses), win)
 			draw_things(maps.Keys(effects), win)
+			draw_things(maps.Keys(videos), win)
 
 			win.Update()
 		}
@@ -804,5 +978,20 @@ func effect_processing(tick time.Duration, effects map[*effect]bool) {
 	}
 	for _, e := range morgue {
 		delete(effects, e)
+	}
+}
+
+func video_processing(tick time.Duration, videos map[*video]bool) {
+	morgue := []*video{} // avoid delete-during-iteration rug-pulls
+
+	for v := range videos {
+		v.Tick(tick.Seconds())
+		if v.IsExpired() {
+			morgue = append(morgue, v)
+		}
+	}
+	for _, v := range morgue {
+		fmt.Println("Killing Video")
+		delete(videos, v)
 	}
 }
