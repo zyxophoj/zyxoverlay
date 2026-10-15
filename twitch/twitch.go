@@ -24,6 +24,9 @@ func Run_from_browser_parasite(messages chan map[string]string, parasite_port in
 	raw_messages := make(chan []byte)
 
 	go func() {
+		last_name := "simp_incel_virgin69"                                     // Known banned words on Twitch, so unlikely to be a live username
+		last_message := "Twitch's censorship decisions are entirely rational." // Similarly implausible message
+
 		// You know the rules, and so do I
 		rules := map[string]string{
 			"message-username":  "username",
@@ -51,6 +54,13 @@ func Run_from_browser_parasite(messages chan map[string]string, parasite_port in
 				}
 			}
 			crawl(doc)
+
+			if out["username"] == last_name && out["message-text"] == last_message {
+				// Drop duplicate message - this is usually a parasite problem
+				continue
+			}
+			last_name = out["username"]
+			last_message = out["message-text"]
 
 			messages <- out
 		}

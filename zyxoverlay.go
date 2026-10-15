@@ -1,46 +1,63 @@
 package main
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"image"
 	"image/color"
-	"io"
 	"iter"
-	"maps"
-	"math"
-	"math/rand"
 	"os"
-	"reflect"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	_ "image/png"
 
-	"golang.org/x/image/font/basicfont"
 	"gopkg.in/ini.v1"
 
 	"github.com/gopxl/pixel/v2"
 	"github.com/gopxl/pixel/v2/backends/opengl"
-	"github.com/gopxl/pixel/v2/ext/text"
 
-	ffmpeg "github.com/u2takey/ffmpeg-go"
-	/*
-		"github.com/gopxl/beep/v2"
-		"github.com/gopxl/beep/v2/speaker"
-		"github.com/gopxl/beep/v2/wav"
-	*/
-	"zyxoverlay/batman_words"
+	"zyxoverlay/fight_club"
 	"zyxoverlay/twitch"
 	"zyxoverlay/utils"
+	"zyxoverlay/video"
 )
+
+type Config struct {
+	Mode         string
+	ParasitePort int
+	ChannelName  string
+	ArenaWidth   float64
+	ArenaHeight  float64
+	Background   color.RGBA
+}
 
 func main() {
 	messages := make(chan map[string]string)
-	cfg, _, _ := get_config()
+
+	// default values
+	cfg := Config{
+		Mode:         "IRC",
+		ParasitePort: 3000,
+		ChannelName:  "",
+		ArenaWidth:   1280,
+		ArenaHeight:  480,
+		Background:   color.RGBA{0, 0, 0, 0xFF},
+	}
+	ini_data, err := ini.Load("zyxoverlay.ini")
+	if err != nil {
+		fmt.Println("Failed to load ini file!!!", err)
+
+	} else {
+		sec := ini_data.Section("base")
+		sec.MapTo(&cfg)
+
+		// Special case for Background because it is a non-built-in type
+		col, err := utils.Colour_from_RGBstring(sec.Key("Background").String())
+		if err != nil {
+			fmt.Println("Could not decipher Background:", err)
+		} else {
+			cfg.Background = col
+		}
+	}
 
 	switch strings.ToUpper(cfg.Mode) {
 	case "PARASITE":
@@ -65,933 +82,71 @@ func main() {
 	}
 
 	// opengl demands the main thread
-	opengl.Run(func() { run_fight_club(messages) })
+	opengl.Run(func() { run_overlay(messages, &cfg) })
 }
 
-// Fight club stuff starts here
-type Config struct {
-	Mode               string
-	ParasitePort       int
-	ChannelName        string
-	TextHeight         float64
-	ArenaWidth         float64
-	ArenaHeight        float64
-	PushHeight         float64
-	PushSpeed          float64
-	MaxActivePlatforms int
-	Gravity            float64
-	DudeWidth          float64
-	DudeHeight         float64
-	MaxWalkSpeed       float64
-	MinWalkSpeed       float64
-	PlatformPadding    float64
-	TeabagTime         float64
-	TeabagHeal         float64
-	CorpseBounciness   float64
-	Atlas              *text.Atlas
-}
-
-type Colours struct {
-	Background    color.RGBA
-	NameText      color.RGBA
-	PlatformText  color.RGBA
-	HitpointsText color.RGBA
-	Platform      color.RGBA
-	Violence      color.RGBA // It makes sense in context, I promise
-}
-
-type fight_club_globals struct {
-	cfg     Config
-	colours Colours
-	atlas   *text.Atlas
-	sprites map[string]*pixel.Sprite
-}
-
-var FIGHT_CLUB_GLOBALS = &fight_club_globals{}
-
-func get_config() (*Config, *Colours, *text.Atlas) {
-	if FIGHT_CLUB_GLOBALS.atlas == nil {
-
-		FIGHT_CLUB_GLOBALS.cfg = Config{
-			ParasitePort:       3000,
-			ChannelName:        "",
-			TextHeight:         13,
-			ArenaWidth:         1280,
-			ArenaHeight:        480,
-			PushHeight:         75,
-			PushSpeed:          15,
-			MaxActivePlatforms: 5,
-			Gravity:            -250.0,
-			DudeWidth:          20,
-			DudeHeight:         50,
-			MaxWalkSpeed:       150,
-			MinWalkSpeed:       50,
-			PlatformPadding:    5.0,
-			TeabagTime:         0.8,
-			TeabagHeal:         20,
-			CorpseBounciness:   0.4,
-		}
-
-		FIGHT_CLUB_GLOBALS.colours = Colours{
-			Background:    color.RGBA{0, 0, 0, 0xFF},
-			PlatformText:  color.RGBA{0xFF, 0xFF, 0xFF, 0xFF},
-			NameText:      color.RGBA{0xFF, 0, 0, 0xFF},
-			HitpointsText: color.RGBA{0x80, 0, 0, 0xFF},
-			Platform:      color.RGBA{0, 0, 0x80, 0xFF},
-			Violence:      color.RGBA{0x80, 0x80, 0xFF, 0xFF},
-		}
-
-		ini_data, err := ini.Load("zyxoverlay.ini")
-		if err != nil {
-			fmt.Println("Failed to load ini file!!!", err)
-		} else {
-			sec := ini_data.Section("constants")
-			sec.MapTo(&FIGHT_CLUB_GLOBALS.cfg)
-
-			sec = ini_data.Section("colours")
-			// ini.MapTo fails with no error, probably because it does not understand color.RGBA, so we don't use it here
-			rc := reflect.ValueOf(&FIGHT_CLUB_GLOBALS.colours).Elem() //reflect pointer and follow it in reflectland to make things addressible
-			for i := 0; i < rc.NumField(); i++ {
-				name := rc.Type().Field(i).Name
-				if sec.HasKey(name) {
-					col, err := utils.Colour_from_RGBstring(sec.Key(name).String())
-					if err != nil {
-						fmt.Println("Could not decipher ", name, err)
-						continue
-					}
-
-					*(rc.Field(i).Addr().Interface().(*color.RGBA)) = col
-				}
-			}
-		}
-
-		// TODO: try to pick a font based on TextHeight
-		FIGHT_CLUB_GLOBALS.atlas = text.NewAtlas(basicfont.Face7x13, text.ASCII)
-	}
-
-	return &FIGHT_CLUB_GLOBALS.cfg, &FIGHT_CLUB_GLOBALS.colours, FIGHT_CLUB_GLOBALS.atlas
-}
-
-type sprite int
-
-const (
-	Dude sprite = iota
-	DudeTeabag
-	Corpse
-)
-
-// get_sprite gets a sprite
-// only the first call loads a file; subsequent calls use a cache
-// The type-safety here is a bit illusory since any int literal can be auto-converted to sprite.
-func get_sprite(name sprite) *pixel.Sprite {
-	filename := "images/" + map[sprite]string{
-		Dude:       "dude",
-		DudeTeabag: "dudeteabag",
-		Corpse:     "corpse",
-	}[name] + ".png"
-	current := FIGHT_CLUB_GLOBALS.sprites[filename]
-	if current != nil {
-		return current
-	}
-
-	file, err := os.Open(filename)
-	if err != nil {
-		fmt.Println(err)
-		return nil
-	}
-	defer file.Close()
-	img, _, err := image.Decode(file)
-	if err != nil {
-		fmt.Println(err)
-		return nil
-	}
-	dude_pic := pixel.PictureDataFromImage(img)
-	out := pixel.NewSprite(dude_pic, dude_pic.Bounds())
-
-	if FIGHT_CLUB_GLOBALS.sprites[filename] == nil {
-		FIGHT_CLUB_GLOBALS.sprites = map[string]*pixel.Sprite{}
-	}
-	FIGHT_CLUB_GLOBALS.sprites[filename] = out
-	return out
-}
-
-func solid_rect_sprite(rect pixel.Rect, colour color.RGBA) *pixel.Sprite {
-	pd := pixel.MakePictureData(rect)
-	for i := range pd.Pix {
-		pd.Pix[i] = colour
-	}
-	return pixel.NewSprite(pd, pd.Bounds())
-}
-
-// FCO = Fight Club Object
-// i.e. anything (except the bakground) that needs to be drawn onto the window
-type FCO interface {
+// OvO = Overlay Object
+// i.e. anything (except the background) that needs to be drawn onto the window
+type OvO interface {
 	Tick(seconds float64)
+	Draw(target pixel.Target)
+	IsExpired() bool
+}
+
+// TODO: unduplicate
+type can_draw interface {
 	Draw(target pixel.Target)
 }
 
-type platform struct {
-	sprite *pixel.Sprite
-	text   *text.Text
-
-	rect pixel.Rect
-
-	// These are relative to top left of rect
-	sprite_offset pixel.Vec
-	text_offset   pixel.Vec
-
-	age float64
-}
-
-func make_platform(message string) *platform {
-	cfg, colours, atlas := get_config()
-
-	plat_text := text.New(pixel.V(0, 0), atlas)
-	plat_height := cfg.TextHeight + 2*1
-	width := plat_text.BoundsOf(message).W()
-	if width > cfg.ArenaWidth*0.6 {
-		message = "[WALL Of TEXT]"
-		width = plat_text.BoundsOf(message).W()
-		plat_height = cfg.PushHeight
-	}
-	plat_text.Color = colours.PlatformText
-	fmt.Fprintln(plat_text, message)
-	plat_width := width + 2*5
-
-	plat_sprite := solid_rect_sprite(pixel.Rect{pixel.V(0, 0), pixel.V(plat_width, plat_height)}, colours.Platform)
-
-	left := rand.Float64() * (cfg.ArenaWidth - plat_width)
-	left = float64(int(left))
-
-	return &platform{plat_sprite, plat_text,
-		pixel.R(left, -plat_height, left+plat_width, 0),
-		pixel.Vec{X: plat_width / 2, Y: plat_height / 2},             // sprites are drawn based on centre
-		pixel.Vec{X: 5, Y: 1 + 2 + plat_height/2 - cfg.TextHeight/2}, // but text is drawn based off top-left corner!!  And that "2" make no sense,
-		0,
-	}
-}
-
-func (p *platform) Move(dx float64, dy float64) {
-	p.rect = p.rect.Moved(pixel.V(dx, dy))
-}
-
-func (p *platform) Draw(target pixel.Target) {
-	top_left := pixel.V(p.rect.Min.X, p.rect.Min.Y)
-
-	p.sprite.Draw(target, pixel.IM.Moved(p.sprite_offset.Add(top_left)))
-	p.text.Draw(target, pixel.IM.Moved(p.text_offset.Add(top_left)))
-}
-
-// Needed for FCO
-func (p *platform) Tick(seconds float64) {}
-
-type dude struct {
-	name           string
-	name_text      *text.Text
-	hitpoints_text *text.Text
-	width, height  int
-	x, y           float64 //bottom centre
-	dx, dy         float64
-	old_x, old_y   float64
-
-	name_offset pixel.Vec
-
-	hitpoints        float64
-	cooldown_seconds float64
-
-	teabag_cooldown float64
-	teabagee        *corpse
-
-	// TODO: mode?
-}
-
-func make_dude(name string) *dude {
-	cfg, colour, atlas := get_config()
-
-	dude_text := text.New(pixel.V(0, 0), atlas)
-	dude_text.Color = colour.NameText
-	fmt.Fprintln(dude_text, name)
-
-	dude_width := 20
-
-	hp_text := text.New(pixel.V(0, 0), atlas)
-	hp_text.Color = colour.HitpointsText
-	fmt.Fprintln(hp_text, "99")
-
-	x, y := float64(dude_width)/2.0+rand.Float64()*(cfg.ArenaWidth-float64(dude_width)), cfg.ArenaHeight
-
-	return &dude{name, dude_text, hp_text,
-		dude_width, 50,
-		x, y, 0, 0, x, y,
-		pixel.V(-0.5*dude_text.BoundsOf(name).W(), 50),
-		99, 0, 0, nil,
-	}
-}
-
-func (d *dude) Tick(seconds float64) {
-	cfg, _, _ := get_config()
-
-	d.old_x, d.old_y = d.x, d.y
-
-	d.dy += cfg.Gravity * seconds
-	d.x += d.dx * seconds
-	d.y += d.dy * seconds
-
-	// Collision with arena sides
-	if (d.x < 0 && d.dx < 0) || (d.x > cfg.ArenaWidth && d.dx > 0) {
-		d.dx = -0.9 * d.dx
-	}
-
-	// Collision with ground
-	if d.y < 0 {
-		d.y = 0
-		d.dy = 0 // Todo: bounce?
-	}
-
-	d.teabag_cooldown -= seconds
-	if d.teabag_cooldown < 0 {
-		d.teabag_cooldown = 0
-	}
-	if d.dx == 0 && d.teabag_cooldown == 0 {
-		d.dx = (cfg.MinWalkSpeed + (rand.Float64() * (cfg.MaxWalkSpeed - cfg.MinWalkSpeed))) * float64(rand.Intn(2)*2-1)
-	}
-}
-
-func (d *dude) Draw(target pixel.Target) {
-	cfg, _, _ := get_config()
-
-	position := pixel.V(d.x, d.y)
-	sprite := get_sprite(Dude)
-	if d.teabag_cooldown > 0 {
-		sprite = []*pixel.Sprite{sprite, get_sprite(DudeTeabag)}[int(5.0*d.teabag_cooldown/cfg.TeabagTime)%2]
-	}
-	height := sprite.Frame().H()
-
-	d.name_text.Draw(target, pixel.IM.Moved(pixel.V(d.name_offset.X, height).Add(position)))
-	sprite.Draw(target, pixel.IM.Moved(position.Add(pixel.V(0, height/2))))
-	d.hitpoints_text.Draw(target, pixel.IM.Moved(position.Add(pixel.V(
-		-0.5*d.hitpoints_text.BoundsOf(strconv.Itoa(int(d.hitpoints))).W(), height-15))))
-}
-
-func (d *dude) OldPos() (float64, float64) {
-	return d.old_x, d.old_y
-}
-
-// update_hp increases a dude's HP by the specified amount (which can be negative)
-// It also updates cached drawing data that depends on HP.
-// This may create a corpse, which is simply returned (it's up to the caller to add the corpse to the world)
-func (d *dude) update_hp(change float64) *corpse {
-	old_hitpoints := d.hitpoints
-	d.hitpoints += change
-	d.hitpoints_text.Clear()
-	fmt.Fprintln(d.hitpoints_text, strconv.Itoa(int(d.hitpoints)))
-
-	if d.hitpoints < 0 && !(old_hitpoints < 0) {
-		return make_corpse(d.name, d.x, d.y, d.dx, d.dy)
-	}
-
-	return nil
-}
-
-type corpse struct {
-	name        string
-	name_text   *text.Text
-	name_offset pixel.Vec
-
-	x, y         float64 //bottom centre
-	dx, dy       float64
-	old_x, old_y float64
-}
-
-func make_corpse(name string, x float64, y float64, dx float64, dy float64) *corpse {
-	_, colour, atlas := get_config()
-
-	name_text := text.New(pixel.V(0, 0), atlas)
-	name_text.Color = colour.NameText
-	fmt.Fprintln(name_text, name)
-
-	return &corpse{name, name_text, pixel.V(-0.5*name_text.BoundsOf(name).W(), 30), x, y, dx, dy, x, y}
-}
-
-func (c *corpse) Draw(target pixel.Target) {
-	position := pixel.V(c.x, c.y)
-
-	c.name_text.Draw(target, pixel.IM.Moved(c.name_offset.Add(position)))
-	get_sprite(Corpse).Draw(target, pixel.IM.Moved(position.Add(pixel.V(0, 10))))
-}
-
-func (c *corpse) Tick(seconds float64) {
-	cfg, _, _ := get_config()
-
-	c.old_x, c.old_y = c.x, c.y
-	c.dy += cfg.Gravity * seconds
-
-	c.x += c.dx * seconds
-	c.y += c.dy * seconds
-
-	// bounce (not quite elastically) of arena edges
-	if (c.x < 0 && c.dx < 0) || (c.x > cfg.ArenaWidth && c.dx > 0) {
-		c.dx = -0.9 * c.dx
-	}
-	// ...or off the ground
-	if c.y < 0 {
-		c.y = 0
-		if c.dy < 0 {
-			c.dy = -cfg.CorpseBounciness * c.dy
-		}
-	}
-
-	// Corpses can not walk, so there is drag.
-	// TODO: this should really only apply when the corpse is sliding on a platform or on the ground
-	c.dx *= math.Exp(-seconds * 0.5)
-}
-
-func (c *corpse) OldPos() (float64, float64) {
-	return c.old_x, c.old_y
-}
-
-type effect struct {
-	text        string
-	text_text   *text.Text
-	text_offset pixel.Vec
-	duration    float64
-	age         float64
-
-	x, y   float64 //bottom centre
-	dx, dy float64
-}
-
-func make_effect(x float64, y float64, str string) *effect {
-	cfg, colour, atlas := get_config()
-	text_text := text.New(pixel.V(0, 0), atlas)
-	text_text.Color = colour.Violence
-	fmt.Fprintln(text_text, str)
-
-	// Batman words served to conceal some truly atrocious fight choreograpy.  Since we are absolutely confident
-	// in our totally awesome fight choreograpy, we spawn above the fighters (y=DudeHeight) for clear visibility.
-	// Randomness of velocity improves clarity a little bit when there is a gang-teabagging.
-	return &effect{str, text_text, pixel.V(-0.5*text_text.BoundsOf(str).W(), cfg.DudeHeight), 2, 0, x, y, rand.Float64()*60.0 - 30.0, rand.Float64()*40.0 + 30.0}
-}
-
-func (e *effect) Tick(seconds float64) {
-	e.x += e.dx * seconds
-	e.y += e.dy * seconds
-
-	e.age += seconds
-}
-
-func (e *effect) Draw(target pixel.Target) {
-	position := pixel.V(e.x, e.y)
-	e.text_text.Draw(target, pixel.IM.Moved(position.Add(e.text_offset)))
-}
-
-func (e *effect) IsExpired() bool {
-	return e.age > e.duration
-}
-
-type video struct {
-	rect pixel.Rect
-
-	vid_reader      io.Reader
-	finished        chan error
-	frame_time      float64
-	time_since_last float64
-	video_buffer    []byte
-
-	is_expired bool
-}
-
-type streamInfo struct {
-	Streams []struct {
-		CodecType    string `json:"codec_type"`
-		Width        int    `json:"width"`
-		Height       int    `json:"height"`
-		AvgFrameRate string `json:"avg_frame_rate"`
-	} `json:"streams"`
-	Format struct {
-		Duration string `json:"duration"`
-	} `json:"format"`
-}
-
-func make_video(filename string) (*video, error) {
-	full_path := filename
-	out, err := ffmpeg.Probe(full_path)
-	if err != nil {
-		return nil, err
-	}
-	var info streamInfo
-	err = json.Unmarshal([]byte(out), &info)
-	if err != nil {
-		return nil, err
-	}
-
-	videocount := 0
-	w, h := 0, 0
-	frame_time := 0.0
-	for _, s := range info.Streams {
-		if s.CodecType == "video" {
-			videocount += 1
-			w, h = s.Width, s.Height
-
-			var num, den float64
-			_, err := fmt.Sscanf(s.AvgFrameRate, "%f/%f", &num, &den)
-			if err != nil {
-				// TODO: wrap
-				return nil, err
-			}
-			if num*den == 0 {
-				// this really should not happen
-				return nil, errors.New("ffprobe returned bogus frame rate")
-			}
-			frame_time = den / num
-		}
-	}
-	if videocount != 1 {
-		// How do you expect me to play that?
-		return nil, fmt.Errorf("File %s contains %s (which is not 1) video streams", filename, videocount)
-	}
-	// "f" versions of variables because pixel is float-based, but keep the originals since we absolutely do not want
-	// to make an array of fw*fh*4 bytes.
-	fw, fh := float64(w), float64(h)
-
-	cfg, _, _ := get_config()
-	if float64(w) > cfg.ArenaWidth || float64(h) > cfg.ArenaHeight {
-		return nil, errors.New("Video won't fit in the window")
-	}
-
-	x, y := rand.Intn(int(cfg.ArenaWidth)-w), rand.Intn(int(cfg.ArenaHeight)-h)
-	fx, fy := float64(x), float64(y)
-
-	frames_r, frames_w := io.Pipe()
-	finished := make(chan error)
-	go func() {
-		finished <- ffmpeg.Input(full_path).Output("pipe:", ffmpeg.KwArgs{
-			"format":  "rawvideo",
-			"pix_fmt": "rgba",
-			"s":       fmt.Sprintf("%dx%d", w, h),
-		}).
-			WithOutput(frames_w).
-			Silent(true).
-			Run()
-		frames_w.Close()
-	}()
-
-	return &video{pixel.R(fx, fy, fx+fw, fy+fh), frames_r, finished, frame_time, 0, make([]byte, w*h*4), false}, nil
-}
-
-func (v *video) Tick(seconds float64) {
-	if v.is_expired {
-		return
-	}
-
-	v.time_since_last += seconds
-	if v.time_since_last > 0 {
-		select {
-		case err := <-v.finished:
-			if err != nil && err != io.EOF {
-				fmt.Printf("decoder error: %v", err)
-			}
-			v.is_expired = true
-			return
-		default:
-		}
-
-		_, err := io.ReadFull(v.vid_reader, v.video_buffer)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			fmt.Println("Video error:", err)
-			v.is_expired = true
-		}
-
-		v.time_since_last -= v.frame_time
-	}
-}
-
-func (v *video) Draw(target pixel.Target) {
-	pic := pixel.PictureDataFromImage(&image.RGBA{
-		Pix:    v.video_buffer,
-		Stride: int(v.rect.W()) * 4,
-		Rect:   image.Rect(0, 0, int(v.rect.W()), int(v.rect.H())), // image.Rect is not pixel.Rect.  TODO: preserve int bounds; int-to-float-to-int is smelly
-	}) // This handles pixel's upside-down coordinates
-
-	pixel.NewSprite(pic, pic.Bounds()).Draw(target, pixel.IM.Moved(v.rect.Center()))
-}
-
-func (v *video) IsExpired() bool {
-	return v.is_expired
-}
-
-func rand_from[K any](src []K) K {
-	return src[rand.Intn(len(src))]
-}
-
-func draw_things[F FCO, I iter.Seq[F]](i I, win *opengl.Window) {
+func draw_things[O can_draw, I iter.Seq[O]](i I, here pixel.Target) {
 	for t := range i {
-		t.Draw(win)
+		t.Draw(here)
 	}
 }
 
-// run_fight_club does something we don't talk about
-func run_fight_club(messages chan map[string]string) {
-	last_user := "simp_incel_virgin69"                                     // Known banned words on Twitch, so unlikely to be a live username
-	last_message := "Twitch's censorship decisions are entirely rational." // Similarly implausible message
-
-	video_names, err := func() (map[string]string, error) {
-		dir, err := os.Open("videos")
-		if err != nil {
-			return nil, err
-		}
-		filenames, err := dir.Readdirnames(0)
-		if err != nil {
-			return nil, err
-		}
-		names := map[string]string{}
-		for _, name := range filenames {
-			names[strings.Split(name, ".")[0]] = "videos/" + name
-		}
-		return names, nil
-	}()
-	if err != nil {
-		// not fatal, but videos won't work
-		fmt.Println("Error reading videos dir:", err)
-	}
-
-	cfg, colour, _ := get_config()
-	wcfg := opengl.WindowConfig{
+func run_overlay(messages chan map[string]string, cfg *Config) {
+	win, err := opengl.NewWindow(opengl.WindowConfig{
 		Title:  "Do not talk about fight club",
 		Bounds: pixel.R(0, 0, cfg.ArenaWidth, cfg.ArenaHeight),
 		VSync:  true,
-	}
-	win, err := opengl.NewWindow(wcfg)
+	})
 	if err != nil {
 		panic(err)
 	}
 	defer win.Destroy()
 
-	queued_platforms := []*platform{} // oldest first
-	active_platforms := []*platform{}
-	dudes := map[string]*dude{}
-	corpses := map[*corpse]bool{}
-	effects := map[*effect]bool{}
-	videos := map[*video]bool{}
-
-	pushing := false
-	push_height := 0.0
+	fc := fight_club.Make_fight_club(cfg.ArenaWidth, cfg.ArenaHeight)
+	vm, err := video.Make_video_manager(cfg.ArenaWidth, cfg.ArenaHeight)
+	if err != nil {
+		// not fatal, but videos won't work
+		fmt.Println("Error reading videos dir:", err)
+	}
 
 	old_time := time.Now()
 	for !win.Closed() {
 		new_time := time.Now()
-		tick := new_time.Sub(old_time)
+		frame_seconds := new_time.Sub(old_time).Seconds()
 		old_time = new_time
 
-		// We have to be a bit careful here - platform slices suffer identity-destroying append operations, which is why
-		// they are returned back out of platform_processing.  Nothing else modifies the platform slices; they are the world and
-		// the dudes (and other stuff) are just living in it.
-		// (everything else is in maps, which don't have that problem)
-
-		active_platforms, queued_platforms = platform_processing(tick, active_platforms, queued_platforms, &pushing, &push_height)
-		dude_processing(tick, dudes)
-		corpse_processing(tick, corpses)
-		effect_processing(tick, effects)
-		video_processing(tick, videos)
-
-		// Order matters, sometimes.
-		// In particular, dude_on_corpse happens *before* dude_on_dude to prevent automatic teabagging of a kill;
-		// having movement after corpses are created but before they can be teabagged allows the teabagger to turn around and walk away
-		// (or the corpse to be hurled away in the case of a fatal backstab)
-		dude_on_platform_interactions(dudes, active_platforms)
-		dude_on_corpse_interactions(dudes, corpses, effects)
-		dude_on_dude_interactions(dudes, corpses, effects)
-		corpse_on_platform_interactions(corpses, active_platforms)
+		vm.Tick(frame_seconds)
+		fc.Tick(frame_seconds)
 
 		select {
 		case message := <-messages:
 			name := message["username"]
 			text := message["message-text"]
-			if name == "" || (name == last_user && text == last_message) {
-				continue
-			}
-			last_user = name
-			last_message = text
 
-			if strings.HasPrefix(text, "!") {
-				command := text[1:]
-				filename, ok := video_names[command]
-				if ok {
-					v, err := make_video(filename)
-					if err != nil {
-						fmt.Println("Error loading video:", err)
-					} else {
-						videos[v] = true
-					}
-				}
-			} else {
-				queued_platforms = append(queued_platforms, make_platform(name+": "+text))
-			}
-
-			if dudes[name] == nil {
-				dudes[name] = make_dude(name)
-			}
+			fc.Handle_message(name, text)
+			vm.Handle_message(name, text)
 
 		default:
 			// This section - between the win.Clear and the win.Update - must be the only place where drawing happens.
-			win.Clear(colour.Background)
+			win.Clear(cfg.Background)
 
-			draw_things(slices.Values(active_platforms), win)
-			draw_things(maps.Values(dudes), win)
-			draw_things(maps.Keys(corpses), win)
-			draw_things(maps.Keys(effects), win)
-			draw_things(maps.Keys(videos), win)
+			vm.Draw(win)
+			fc.Draw(win)
 
 			win.Update()
 		}
-	}
-
-}
-
-func platform_processing(tick time.Duration, active_platforms []*platform, queued_platforms []*platform, pushing *bool, push_height *float64) ([]*platform, []*platform) {
-	cfg, _, _ := get_config()
-
-	// Platforms time out after a while
-	if len(active_platforms) > 0 {
-		active_platforms[0].age += tick.Seconds()
-		if active_platforms[0].age > 60 {
-			active_platforms = active_platforms[1:]
-		}
-	}
-
-	// New platforms wake up pushing
-	if !*pushing && len(queued_platforms) > 0 {
-		active_platforms = append(active_platforms, queued_platforms[0])
-		for len(active_platforms) > 5 {
-			active_platforms = active_platforms[1:]
-		}
-		queued_platforms = queued_platforms[1:]
-
-		*push_height = 0.0
-		*pushing = true
-	}
-
-	if *pushing {
-		// To reduce backlog, long queues increase pushing speed
-		push_change := tick.Seconds() * cfg.PushSpeed * float64(1+len(queued_platforms))
-		*push_height += push_change
-		if *push_height > cfg.PushHeight {
-			push_change -= (*push_height - cfg.PushHeight)
-			*push_height = cfg.PushHeight
-			*pushing = false
-		}
-
-		for _, p := range active_platforms {
-			p.Move(0, push_change)
-		}
-	}
-
-	return active_platforms, queued_platforms
-}
-
-func dude_processing(tick time.Duration, dudes map[string]*dude) {
-	for _, d := range dudes {
-		d.Tick(tick.Seconds())
-	}
-}
-
-func dude_on_platform_interactions(dudes map[string]*dude, platforms []*platform) {
-	cfg, _, _ := get_config()
-	for _, d := range dudes {
-		_, old_y := d.OldPos()
-
-		for _, plat := range platforms {
-			if plat.rect.Min.X < d.x && d.x < plat.rect.Max.X &&
-				d.y < plat.rect.Max.Y+1 && old_y > plat.rect.Min.Y-1 {
-				if plat.rect.Max.Y-d.y < cfg.TextHeight/2 {
-					// dude pushed up by platform
-					d.dy = 0
-					d.y = plat.rect.Max.Y
-				} else {
-					// platform is too high to jump onto, so bounce off it.
-					// (realistically, only walls of text should do this)
-					// Bounce of very slightly faster than we hit the wall
-					// to ensure dudes don't get stuck inside.  Yee-ha.
-					d.dx *= -1.01
-				}
-			}
-		}
-	}
-}
-
-func dude_on_dude_interactions(dudes map[string]*dude, corpses map[*corpse]bool, effects map[*effect]bool) {
-	excitement := []string{"!", "!!", "!!!"}
-
-	// TODO: parachuting dudes can't fight or be fought
-	// TODO: dudes in cooldown can't fight
-
-	// To avoid iteration rug-pulls, we'll add dead dudes to the morgue here
-	// and remove them from the game after the main loop.
-	morgue := []*dude{}
-
-	for _, d1 := range dudes {
-		for _, d2 := range dudes {
-			if d1 == d2 {
-				continue
-			}
-
-			// Must be close enough to fight
-			if math.Abs(d1.x-d2.x) > 7 || math.Abs(d1.y-d2.y) > 1 {
-				continue
-			}
-
-			// Rule 3:  If somebody dies, the fight is over (for them, at least)
-			if d1.hitpoints < 0 || d2.hitpoints < 0 {
-				continue
-			}
-
-			xdiff := d2.x - d1.x
-			dxdiff := d2.dx - d1.dx
-			if dxdiff*xdiff >= 0 {
-				//They are moving apart
-				continue
-			}
-
-			if d1.dx*d2.dx <= 0 {
-				//Moving towards each other
-				d1.dx, d2.dx = -0.9*d1.dx, -0.9*d2.dx
-				d1.dy += 20
-				d2.dy += 20
-				// update_hp last so that corpses properly inherit position and velocity
-				damage1, damage2 := math.Sqrt(d1.hitpoints), math.Sqrt(d2.hitpoints)
-				// for simplicity, we always add the corpse (even if it's nil) and clean up the map at the end
-				corpses[d1.update_hp(-damage2)] = true
-				corpses[d2.update_hp(-damage1)] = true
-
-				effects[make_effect((d1.x+d2.x)/2.0, (d1.y+d2.y)/2.0, batman_words.Get_word()+rand_from(excitement))] = true
-
-				fmt.Println(d1.name, "hits", d2.name, "down to", d2.hitpoints)
-				fmt.Println(d2.name, "hits", d1.name, "down to", d1.hitpoints)
-			} else {
-				//Backstab!
-				stabber, victim := d1, d2
-				if math.Abs(d2.dx) > math.Abs(d1.dx) {
-					stabber, victim = d2, d1
-				}
-
-				// There is an element of cartoon physics here, but there is also an important
-				// balance consideration.  Dudes get backstabbed when they are walking too slowly.
-				// We don't want a permanently-slow-moving (and therefore, -backstab-receiving)
-				// subclass of dude, so a backstabbee gets a generous "donation" of speed.
-				ddx := (stabber.dx - victim.dx)
-				victim.dx += 3.0 * ddx
-				victim.dy += math.Abs(ddx)
-				corpses[victim.update_hp(-2*math.Sqrt(stabber.hitpoints))] = true // Double damage!
-
-				effects[make_effect((d1.x+d2.x)/2.0, (d1.y+d2.y)/2.0, batman_words.Get_word()+rand_from(excitement))] = true
-
-				fmt.Println(stabber.name, "backstabs", victim.name, "down to", victim.hitpoints)
-			}
-
-			if d1.hitpoints < 0 {
-				morgue = append(morgue, d1)
-			}
-			if d2.hitpoints < 0 {
-				morgue = append(morgue, d2)
-			}
-		}
-	}
-
-	for _, d := range morgue {
-		delete(dudes, d.name)
-	}
-	delete(corpses, nil)
-}
-
-func corpse_processing(tick time.Duration, corpses map[*corpse]bool) {
-	for d := range corpses {
-		d.Tick(tick.Seconds())
-	}
-}
-
-func corpse_on_platform_interactions(corpses map[*corpse]bool, platforms []*platform) {
-	cfg, _, _ := get_config()
-	for c := range corpses {
-		_, old_y := c.OldPos()
-
-		// collision with platforms
-		for _, plat := range platforms {
-			if plat.rect.Min.X < c.x && c.x < plat.rect.Max.X &&
-				c.y < plat.rect.Max.Y && old_y > plat.rect.Min.Y {
-				if c.dy < 0 {
-					c.dy = -cfg.CorpseBounciness * c.dy
-				} else {
-					c.dy = 0
-				}
-				c.y = plat.rect.Max.Y
-			}
-		}
-	}
-}
-
-func dude_on_corpse_interactions(dudes map[string]*dude, corpses map[*corpse]bool, effects map[*effect]bool) {
-	// There is one dude-corpse interaction: Teabagging!
-	tea_words := []string{"YORKSHIRE", "SPIFF", "CHA", "EARL GREY, HOT", "ROSIE", "PG", "TETLEY"}
-	excitement := []string{"!", "!!", "!!!"}
-	cfg, _, _ := get_config()
-
-	for _, d := range dudes {
-		if d.teabagee != nil && d.teabag_cooldown == 0 {
-			// teabagging complete
-			d.update_hp(+cfg.TeabagHeal)
-			delete(corpses, d.teabagee)
-			d.teabagee = nil
-		}
-		if d.teabagee != nil {
-			// still teabagging
-			continue
-		}
-		for c, _ := range corpses {
-			//Close enough?
-			if math.Abs(d.x-c.x) > 7 || math.Abs(d.y-c.y) > 1 {
-				continue
-			}
-
-			// begin teabagging!
-			d.teabag_cooldown = cfg.TeabagTime
-			d.teabagee = c
-			d.dx = 0
-			c.dx = 0
-			c.dy = 0
-
-			effects[make_effect(d.x, d.y, rand_from(tea_words)+rand_from(excitement))] = true
-
-			// Note: once teabagging starts, we let it finish even if the teabagger gets launched into orbit.
-			// This is considered to be a feature, because it is funny.
-		}
-	}
-}
-
-func effect_processing(tick time.Duration, effects map[*effect]bool) {
-	morgue := []*effect{} // avoid delete-during-iteration rug-pulls
-
-	for e := range effects {
-		e.Tick(tick.Seconds())
-		if e.IsExpired() {
-			morgue = append(morgue, e)
-		}
-	}
-	for _, e := range morgue {
-		delete(effects, e)
-	}
-}
-
-func video_processing(tick time.Duration, videos map[*video]bool) {
-	morgue := []*video{} // avoid delete-during-iteration rug-pulls
-
-	for v := range videos {
-		v.Tick(tick.Seconds())
-		if v.IsExpired() {
-			morgue = append(morgue, v)
-		}
-	}
-	for _, v := range morgue {
-		fmt.Println("Killing Video")
-		delete(videos, v)
 	}
 }
