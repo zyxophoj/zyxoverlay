@@ -75,6 +75,7 @@ func (v *Videos) Tick(seconds float64) {
 		}
 	}
 	for _, vid := range morgue {
+		fmt.Println("Deleting expired video")
 		delete(v.videos, vid)
 	}
 }
@@ -88,13 +89,15 @@ func (v *Videos) Draw(target pixel.Target) {
 type video struct {
 	rect pixel.Rect
 
-	vid_reader      io.Reader
-	finished        chan error
-	frame_time      float64
-	time_since_last float64
-	video_buffer    []byte
+	vid_reader          io.Reader
+	finished_video      chan error
+	finished_video_flag bool
+	frame_time          float64
+	time_since_last     float64
+	video_buffer        []byte
 
-	is_expired bool
+	finished_audio      chan error
+	finished_audio_flag bool
 }
 
 type streamInfo struct {
@@ -197,9 +200,9 @@ func make_video(filename string, arenaWidth float64, arenaHeight float64) (*vide
 	fx, fy := float64(x), float64(y)
 
 	frames_r, frames_w := io.Pipe()
-	finished := make(chan error)
+	finished_video := make(chan error)
 	go func() {
-		finished <- ffmpeg.Input(full_path).Output("pipe:", ffmpeg.KwArgs{
+		finished_video <- ffmpeg.Input(full_path).Output("pipe:", ffmpeg.KwArgs{
 			"format":  "rawvideo",
 			"pix_fmt": "rgba",
 			"s":       fmt.Sprintf("%dx%d", w, h),
@@ -230,36 +233,52 @@ func make_video(filename string, arenaWidth float64, arenaHeight float64) (*vide
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	go cmd.Wait()
+	finished_audio := make(chan error)
+	go func() {
+		finished_audio <- cmd.Wait()
+	}()
 
 	streamer := &ffmpegStreamer{reader: cmd_out, channels: 2}
 
 	go speaker.Play(beep.Seq(streamer, beep.Callback(func() {})))
 
-	return &video{pixel.R(fx, fy, fx+fw, fy+fh), frames_r, finished, frame_time, 0, make([]byte, w*h*4), false}, nil
+	return &video{pixel.R(fx, fy, fx+fw, fy+fh), frames_r, finished_video, false, frame_time, 0, make([]byte, w*h*4),
+		finished_audio, false}, nil
 }
 
 func (v *video) Tick(seconds float64) {
-	if v.is_expired {
+	if v.IsExpired() {
 		return
+	}
+
+	if !v.finished_audio_flag {
+		select {
+		case err := <-v.finished_audio:
+			if err != nil {
+				fmt.Printf("Audio error: %v", err)
+			}
+			v.finished_audio_flag = true
+		default:
+		}
 	}
 
 	v.time_since_last += seconds
 	if v.time_since_last > 0 {
-		select {
-		case err := <-v.finished:
-			if err != nil && err != io.EOF {
-				fmt.Printf("decoder error: %v", err)
+		if !v.finished_video_flag {
+			select {
+			case err := <-v.finished_video:
+				v.finished_video_flag = true
+				if err != nil && err != io.EOF {
+					fmt.Printf("Video decoder error: %v", err)
+				}
+				return
+			default:
 			}
-			v.is_expired = true
-			return
-		default:
-		}
 
-		_, err := io.ReadFull(v.vid_reader, v.video_buffer)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			fmt.Println("Video error:", err)
-			v.is_expired = true
+			_, err := io.ReadFull(v.vid_reader, v.video_buffer)
+			if err != nil && err != io.EOF {
+				fmt.Println("Video reading error:", err)
+			}
 		}
 
 		v.time_since_last -= v.frame_time
@@ -277,5 +296,5 @@ func (v *video) Draw(target pixel.Target) {
 }
 
 func (v *video) IsExpired() bool {
-	return v.is_expired
+	return v.finished_video_flag && v.finished_audio_flag
 }
