@@ -5,7 +5,7 @@
 MSYSCMD_WIN=C:\\msys64\\msys2_shell.cmd
 GO_NIX=/c/Program\ Files/Go/bin/go
 
-zyxoverlay.exe: zyxoverlay.go twitch/twitch.go fight_club/fight_club.go
+zyxoverlay.exe: zyxoverlay.go twitch/twitch.go fight_club/fight_club.go video/video.go
 	$(MSYSCMD_WIN) -defterm -mingw64 -no-start -here -c "$(GO_NIX) build zyxoverlay.go"
 
 release: zyxoverlay.exe
