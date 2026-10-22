@@ -50,6 +50,10 @@ type Config struct {
 	TeabagTime         float64
 	TeabagHeal         float64
 	CorpseBounciness   float64
+	StartingHitpoints  float64
+	DudeWallBounce     float64
+	CorpseWallBounce   float64
+	CorpseDrag         float64
 	Atlas              *text.Atlas
 }
 
@@ -89,6 +93,10 @@ func get_config() (*Config, *Colours, *text.Atlas) {
 			TeabagTime:         0.8,
 			TeabagHeal:         20,
 			CorpseBounciness:   0.4,
+			StartingHitpoints:  99,
+			DudeWallBounce:     0.95,
+			CorpseWallBounce:   0.9,
+			CorpseDrag:         2,
 		}
 
 		FIGHT_CLUB_GLOBALS.colours = Colours{
@@ -321,7 +329,7 @@ func make_dude(name string) *dude {
 		dude_width, 50,
 		x, y, 0, 0, x, y,
 		pixel.V(-0.5*dude_text.BoundsOf(name).W(), 50),
-		99, 0, 0, nil,
+		cfg.StartingHitpoints, 0, 0, nil,
 	}
 }
 
@@ -336,7 +344,7 @@ func (d *dude) Tick(seconds float64) {
 
 	// Collision with arena sides
 	if (d.x < 0 && d.dx < 0) || (d.x > cfg.ArenaWidth && d.dx > 0) {
-		d.dx = -0.9 * d.dx
+		d.dx = -cfg.DudeWallBounce * d.dx
 	}
 
 	// Collision with ground
@@ -428,7 +436,7 @@ func (c *corpse) Tick(seconds float64) {
 
 	// bounce (not quite elastically) of arena edges
 	if (c.x < 0 && c.dx < 0) || (c.x > cfg.ArenaWidth && c.dx > 0) {
-		c.dx = -0.9 * c.dx
+		c.dx = -cfg.CorpseWallBounce * c.dx
 	}
 	// ...or off the ground
 	if c.y < 0 {
@@ -440,7 +448,7 @@ func (c *corpse) Tick(seconds float64) {
 
 	// Corpses can not walk, so there is drag.
 	// TODO: this should really only apply when the corpse is sliding on a platform or on the ground
-	c.dx *= math.Exp(-seconds * 0.5)
+	c.dx *= math.Exp(-seconds/cfg.CorpseDrag)
 }
 
 func (c *corpse) OldPos() (float64, float64) {
