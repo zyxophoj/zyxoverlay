@@ -1,11 +1,14 @@
 package utils
 
-import "errors"
-import "unicode"
-import "strconv"
+import(
+	"errors"
+	"iter"
+	"unicode"
+	"strconv"
+	"github.com/gopxl/pixel/v2"
+	"image/color"
+)
 
-import	"image/color"
-	
 // Color_from_RGBstring converts an ini file colour string (e.g. "R255g128b0") into a color.RGBA
 // The components can be in any order because I can never remember what the standard is.
 // The alpha part of RGBA just gets set to 0xFF (full opacity) if omitted
@@ -42,4 +45,16 @@ func Colour_from_RGBstring(str string) (color.RGBA, error) {
 		}
 	}
 	return out, nil
+}
+
+
+// TODO: unduplicate
+type can_draw interface {
+	Draw(target pixel.Target)
+}
+
+func Draw_things[O can_draw, I iter.Seq[O]](i I, here pixel.Target) {
+	for t := range i {
+		t.Draw(here)
+	}
 }

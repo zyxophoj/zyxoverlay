@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"iter"
 	"maps"
 	"math"
 	"math/rand"
@@ -220,22 +219,12 @@ func (fc *Fight_club) Handle_message(name string, text string) {
 	}
 }
 
-// TODO: unduplicate
-type can_draw interface {
-	Draw(target pixel.Target)
-}
-
-func draw_things[O can_draw, I iter.Seq[O]](i I, here pixel.Target) {
-	for t := range i {
-		t.Draw(here)
-	}
-}
 
 func (fc *Fight_club) Draw(target pixel.Target) {
-	draw_things(slices.Values(fc.active_platforms), target)
-	draw_things(maps.Values(fc.dudes), target)
-	draw_things(maps.Keys(fc.corpses), target)
-	draw_things(maps.Keys(fc.effects), target)
+	utils.Draw_things(slices.Values(fc.active_platforms), target)
+	utils.Draw_things(maps.Values(fc.dudes), target)
+	utils.Draw_things(maps.Keys(fc.corpses), target)
+	utils.Draw_things(maps.Keys(fc.effects), target)
 }
 
 type platform struct {

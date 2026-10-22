@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"image/color"
-	"iter"
 	"os"
 	"strings"
 	"time"
@@ -91,17 +90,6 @@ type OvO interface {
 	Tick(seconds float64)
 	Draw(target pixel.Target)
 	IsExpired() bool
-}
-
-// TODO: unduplicate
-type can_draw interface {
-	Draw(target pixel.Target)
-}
-
-func draw_things[O can_draw, I iter.Seq[O]](i I, here pixel.Target) {
-	for t := range i {
-		t.Draw(here)
-	}
 }
 
 func run_overlay(messages chan map[string]string, cfg *Config) {
